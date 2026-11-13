@@ -1,0 +1,42 @@
+STRINGTABLE mcpprefs
+{
+	mcpprefs								"MCP";
+
+	COLLABMCP_SERVER_GROUP					"Server";
+	COLLABMCP_CLIENTS_GROUP					"Clients";
+	COLLABMCP_SECURITY_GROUP				"Security";
+	COLLABMCP_TOOLSET_GROUP					"Toolset";
+
+	COLLABMCP_ENABLE						"Allow MCP Server";
+	COLLABMCP_STATUS						"Status";
+	COLLABMCP_HOST							"Host";
+	COLLABMCP_PORT							"Port";
+	COLLABMCP_TOKEN							"Auth Token";
+	COLLABMCP_SHOW_TOKEN					"Show Token";
+	COLLABMCP_COPY_TOKEN					"Copy Token";
+	COLLABMCP_REGENERATE_TOKEN				"Regenerate Token";
+	COLLABMCP_TIMEOUT						"Request Timeout (s)";
+
+	COLLABMCP_CLIENT						"MCP Client";
+	COLLABMCP_CLIENT_STATUS					"Client Status";
+	COLLABMCP_CONFIG_FILE					"Config File";
+	COLLABMCP_UPDATE_CLIENT					"Update Selected Client";
+	COLLABMCP_REMOVE_CLIENT					"Remove from Client";
+	COLLABMCP_COPY_CONFIG					"Copy Config";
+	COLLABMCP_RESTART_HINT					"Quit the client completely and start it again after changing it: it only connects at startup.";
+	COLLABMCP_CLIENT_CLAUDE_DESKTOP			"Claude Desktop";
+	COLLABMCP_CLIENT_CLAUDE_CODE			"Claude Code";
+	COLLABMCP_CLIENT_CODEX					"Codex";
+	COLLABMCP_CLIENT_CURSOR					"Cursor";
+	COLLABMCP_CLIENT_OTHER					"Other";
+
+	COLLABMCP_ALLOW_PYTHON					"Allow Python Execution (run_script)";
+	COLLABMCP_LOG_CALLS						"Log Incoming Calls";
+	COLLABMCP_CONSOLE_REJECTIONS			"Show Rejected Calls in Console";
+
+	COLLABMCP_TOOLSET_HINT					"Changes are applied after restarting your MCP client.";
+	COLLABMCP_TOOLSET_BASICS				"Basics (ping, get_info)";
+	COLLABMCP_TOOLSET_HIERARCHY				"Hierarchy (get_hierarchy)";
+	COLLABMCP_TOOLSET_ENTITIES				"Entities (get_object)";
+	COLLABMCP_TOOLSET_SYSTEM				"System (get_log)";
+}

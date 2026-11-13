@@ -1,0 +1,12 @@
+# Run from the repository root:  docker compose -f server/docker-compose.yml up -d
+services:
+  c4d-collab:
+    build:
+      context: ..
+      dockerfile: server/Dockerfile
+    ports:
+      - "47800:47800"
+    environment:
+      C4D_COLLAB_PASSWORD: "change-me"
+      C4D_COLLAB_SESSION: "C4D Collab"
+    restart: unless-stopped

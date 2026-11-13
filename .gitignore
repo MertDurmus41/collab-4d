@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+# Downloaded third-party projects (GPL) kept only for local study, never committed
+research/repos/
+# Local logs and backups
+*.log
+backups/
+tests/c4d_real/out/
+plugin/c4d_collab/selftest.enabled

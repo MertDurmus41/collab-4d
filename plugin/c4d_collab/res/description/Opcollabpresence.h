@@ -1,0 +1,9 @@
+#ifndef _OPCOLLABPRESENCE_H_
+#define _OPCOLLABPRESENCE_H_
+
+enum
+{
+	OPCOLLABPRESENCE_DUMMY = 1000
+};
+
+#endif
