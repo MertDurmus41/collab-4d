@@ -9,3 +9,19 @@ research/repos/
 backups/
 tests/c4d_real/out/
 plugin/c4d_collab/selftest.enabled
+
+# Node / website
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Secrets and local config, never commit these
+.env
+.env.*
+!.env.example
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

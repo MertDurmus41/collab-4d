@@ -1,0 +1,74 @@
+name: Bug report
+description: Something does not work as expected
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Please search the existing issues first.
+        Questions about using Collab 4D belong in [Discussions](https://github.com/MertDurmus41/collab-4d/discussions).
+  - type: dropdown
+    id: c4d-version
+    attributes:
+      label: Cinema 4D version
+      description: If several people are in the session, report the version of the person who sees the problem.
+      options:
+        - R17
+        - R18
+        - R19
+        - R20
+        - R21
+        - R22
+        - R23
+        - "2023"
+        - "2024"
+        - "2025"
+        - "2026"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows
+        - macOS
+        - Linux (standalone server only)
+    validations:
+      required: true
+  - type: dropdown
+    id: connection
+    attributes:
+      label: How are the computers connected?
+      options:
+        - Same computer
+        - Same home or office network
+        - Tailscale or ZeroTier
+        - Standalone server
+        - Port forwarding
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Host a session
+        2. Join from a second Cinema 4D
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: Paste the relevant lines from the panel's Log list or from `c4d_collab.log`. Remove passwords first.
+      render: text
