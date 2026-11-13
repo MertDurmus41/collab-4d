@@ -18,8 +18,7 @@
   <a href="#quick-start">Quick start</a> ·
   <a href="docs/internet.md">Work from different homes</a> ·
   <a href="ARCHITECTURE.md">Architecture</a> ·
-  <a href="CONTRIBUTING.md">Contributing</a> ·
-  <a href="docs/README.tr.md">Türkçe</a>
+  <a href="CONTRIBUTING.md">Contributing</a>
 </p>
 
 <p align="center">
@@ -46,7 +45,7 @@
 - Standalone session server that needs no Cinema 4D (Docker file and one-command cloud setup included)
 - Optional MCP page so an AI assistant can drive a live Cinema 4D (development aid, off by default)
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for how it works. The notes there are in Turkish.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for how it works.
 
 ## Quick start
 
@@ -90,30 +89,29 @@ It also ships as a [Docker image](server/Dockerfile) and as a [one-command setup
 | R19, 2023 | Tested live in Cinema 4D |
 | R17, R18, R20, R21, R22, R23, 2024, 2025, 2026 | API compatibility checked against the documentation and fallbacks tested with fake version profiles. **Not tried in a real copy yet.** |
 
-The plugin targets Cinema 4D R17 and newer (R17–R22 run Python 2.7, R23 runs 3.7, 2023 runs 3.9, 2024 and later run 3.11+). Details and limits are in [ARCHITECTURE.md](ARCHITECTURE.md), section 7g. If you can open one of the untested versions, running the checks in [tests/c4d_manual/CHECKLIST.md](tests/c4d_manual/CHECKLIST.md) helps a lot.
+The plugin targets Cinema 4D R17 and newer (R17–R22 run Python 2.7, R23 runs 3.7, 2023 runs 3.9, 2024 and later run 3.11+). Details and limits are in [ARCHITECTURE.md](ARCHITECTURE.md), section 7g. If you can open one of the untested versions, running the checks in [tests/c4d_manual/CHECKLIST.md](https://github.com/MertDurmus41/collab-4d/blob/dev/tests/c4d_manual/CHECKLIST.md) (on the `dev` branch) helps a lot.
 
 ## Documentation
 
 | | |
 |---|---|
-| [docs/internet.md](docs/internet.md) | Work together from different homes with Tailscale or ZeroTier (Turkish and English) |
+| [docs/internet.md](docs/internet.md) | Work together from different homes with Tailscale or ZeroTier |
 | [server/deploy/README.md](server/deploy/README.md) | Run the session server on a free cloud machine |
-| [ARCHITECTURE.md](ARCHITECTURE.md) | Design, protocol, locks and measurements (Turkish) |
-| [research/](research) | Background research notes (Turkish) |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Design, protocol, locks, version compatibility and measurements |
 | [CHANGELOG.md](CHANGELOG.md) | What changed in each version |
 
 ## Development
 
-Tests need no Cinema 4D and run on Python 2.7 or 3.x:
+Tests, the manual Cinema 4D checklist, research notes and the website source live on the [`dev` branch](https://github.com/MertDurmus41/collab-4d/tree/dev). The tests need no Cinema 4D and run on Python 2.7 or 3.x:
 
 ```bash
+git checkout dev
 python -m unittest discover -s tests/core -v
 python -m unittest discover -s tests/adapter -v
 python -m unittest discover -s tests/compat -v
 ```
 
-Testing inside a real Cinema 4D is described in [tests/c4d_manual/CHECKLIST.md](tests/c4d_manual/CHECKLIST.md). More in [CONTRIBUTING.md](CONTRIBUTING.md).
-
+More in [CONTRIBUTING.md](CONTRIBUTING.md).
 ## Roadmap
 
 - [x] Live sessions with passwords, presence and object locks

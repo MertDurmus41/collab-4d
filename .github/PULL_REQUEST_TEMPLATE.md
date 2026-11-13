@@ -4,6 +4,8 @@
 
 ## How it was tested
 
+<!-- Pull requests go against the `dev` branch. -->
+
 - [ ] `python -m unittest discover -s tests/core -v`
 - [ ] `python -m unittest discover -s tests/adapter -v`
 - [ ] `python -m unittest discover -s tests/compat -v`

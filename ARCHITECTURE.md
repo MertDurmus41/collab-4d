@@ -1,67 +1,68 @@
-# C4D Collab — Mimari
+# Collab 4D: Architecture
 
-Bu belge projenin **anayasasıdır**. Yeni kod yazmadan önce buraya uyup uymadığına bak. Mimari değişirse önce bu belge güncellenir.
+This document is the **constitution** of the project. Before writing new code, check that it follows what is written here. If the architecture changes, update this document first.
 
-## 1. Hedef
-Birden fazla kişinin aynı Cinema 4D sahnesinde gerçek zamanlı animasyon ve modelleme yapabilmesi.
-- Ücretsiz, MIT lisanslı.
-- Cinema 4D **R17 (2016) → 2026+** sürümleri desteklenir.
-- Sunucu, **proje sahibinin (host) C4D'sinin içinde** çalışır. İsteğe bağlı olarak bağımsız Python/Docker sunucusu da kullanılabilir.
+> **About this document.** The test files, research notes and the original, longer Turkish version of this document (with the full measurement diary) live on the [`dev` branch](https://github.com/MertDurmus41/collab-4d/tree/dev). File paths such as `tests/...` below refer to that branch.
+## 1. Goal
+Let several people do real-time animation and modeling in the same Cinema 4D scene.
+- Free, MIT licensed.
+- Supports Cinema 4D **R17 (2016) to 2026+**.
+- The server runs **inside the project owner's (host's) Cinema 4D**. A standalone Python/Docker server can be used instead.
 
-## 2. Katmanlar
+## 2. Layers
 
 ```
-┌──────────────────────── Cinema 4D (her kullanıcı) ───────────────────────────┐
-│  c4d_collab.pyp  (giriş noktası, plugin kayıtları)                           │
-│  ┌── UI (c4d'ye bağlı) ───────────────────────────────────────────────────┐ │
-│  │ CollabDialog: Host/Join, kullanıcılar, durum, log                      │ │
-│  │ PresenceDrawer: diğer kullanıcıların kilit renkleri, isimleri, kameraları│ │
+┌──────────────────────── Cinema 4D (every user) ──────────────────────────────┐
+│  c4d_collab.pyp  (entry point, plugin registrations)                         │
+│  ┌── UI (depends on c4d) ─────────────────────────────────────────────────┐ │
+│  │ CollabDialog: Host/Join, users, status, log                            │ │
+│  │ PresenceDrawer: other users' lock colours, names, cameras              │ │
 │  └───────────────────────────────────────────────────────────────────────┘ │
-│  ┌── Adaptör: c4d_collab_lib/c4d_adapter (c4d'ye bağlı) ──────────────────┐ │
+│  ┌── Adapter: c4d_collab_lib/c4d_adapter (depends on c4d) ────────────────┐ │
 │  │ plugin_ids · compat · bridge · ui_dialog                               │ │
-│  │ (Aşama 3+: ids · tracker · serializers/* · applier · reconcile)       │ │
+│  │ (Stage 3+: ids · tracker · serializers/* · applier · reconcile)       │ │
 │  └───────────────────────────────────────────────────────────────────────┘ │
-│  ┌── Çekirdek: c4d_collab_lib/core (saf Python, c4d IMPORT ETMEZ) ────────┐ │
+│  ┌── Core: c4d_collab_lib/core (pure Python, NEVER imports c4d) ──────────┐ │
 │  │ protocol · net · model · diff · locks · client · mirror · session ·   │ │
 │  │ server · compat · log                                                 │ │
 │  └───────────────────────────────────────────────────────────────────────┘ │
 └──────────────────────────────────────────────────────────────────────────────┘
-        ▲  TCP: [4 bayt uzunluk][1 bayt bayrak][UTF-8 JSON (zlib opsiyonel)]
+        ▲  TCP: [4 byte length][1 byte flags][UTF-8 JSON (zlib optional)]
         ▼
-  Host C4D içindeki core.server  ── veya ──  server/run_server.py / Docker
+  core.server inside the host's C4D  ── or ──  server/run_server.py / Docker
 ```
 
-### Değişmez kurallar
-1. `core/` **asla** `c4d` import etmez. Bu sayede C4D olmadan test edilebilir, aynı sunucu her yerde çalışır ve ileride Maya/Mine-imator için sadece yeni bir adaptör yazmak yeter.
-2. Tüm eklenti kodu **Python 2.7 ve 3.x** ile çalışır: f-string, tip ipuçları, `async`, `nonlocal`, `pathlib`, `selectors` kullanılmaz. Her dosya `from __future__ import absolute_import, division, print_function, unicode_literals` ile başlar. ASCII dışı karakter (ör. Türkçe harf) içeren dosyalar ilk satırda `# -*- coding: utf-8 -*-` taşır, yoksa Python 2.7'de dosya açılmaz.
-3. Sadece **standart kütüphane** kullanılır (pip yok, `pickle`/`eval` yok).
-4. Sahne **yalnızca ana thread'den** değiştirilir. Ağ thread'i sadece kuyruğa yazar ve `SpecialEventAdd` ile ana thread'i uyandırır.
-5. Uzaktan gelen değişiklikler undo geçmişine yazılmaz.
-6. Sürüme bağlı her C4D API'si `c4d_adapter/compat.py` içinden çağrılır.
+### Fixed rules
+1. `core/` **never** imports `c4d`. That way it can be tested without C4D, the same server runs anywhere, and supporting Maya or Mine-imator later only needs a new adapter.
+2. All plugin code runs on **Python 2.7 and 3.x**: no f-strings, type hints, `async`, `nonlocal`, `pathlib` or `selectors`. Every file starts with `from __future__ import absolute_import, division, print_function, unicode_literals`. Files with non-ASCII characters carry `# -*- coding: utf-8 -*-` on the first line, otherwise Python 2.7 will not open the file.
+3. **Standard library only** (no pip, no `pickle`/`eval`).
+4. The scene is changed **only from the main thread**. The network thread only writes to a queue and wakes the main thread with `SpecialEventAdd`.
+5. Remote changes are not written to the undo history.
+6. Every C4D API that depends on the version is called through `c4d_adapter/compat.py`.
 
-## 3. Veri modeli (`core/model.py`)
+## 3. Data model (`core/model.py`)
 - **Node:** `uuid, kind (object|tag|track|doc), ctype, parent, prev, name, data`
-  - Hiyerarşi çocuğun özelliğidir: `parent` (ebeveyn uuid'si veya `null` = kök) ve `prev` (önceki kardeşin uuid'si veya `null` = ilk). Tag ve track'lerin `parent`'ı sahibi olan nesnedir.
-- **Op (işlem):** `{"op": "create"|"update"|"delete"|"move", "uuid": ..., ...}`
+  - The hierarchy belongs to the child: `parent` (the parent's uuid, or `null` = root) and `prev` (the previous sibling's uuid, or `null` = first). The `parent` of a tag or track is the object that owns it.
+- **Op (operation):** `{"op": "create"|"update"|"delete"|"move", "uuid": ..., ...}`
   - `create`: `kind, ctype, parent, prev, name, data`
-  - `update`: `patch` (bkz. `core/diff.py`), istenirse `name`
+  - `update`: `patch` (see `core/diff.py`), and `name` if needed
   - `move`: `parent, prev`
-  - `delete`: alt düğümlerle birlikte siler
-- **Sıra:** Sunucu her kabul ettiği Op'a artan bir `seq` verir ve herkes Op'ları bu sırayla uygular.
+  - `delete`: deletes together with the child nodes
+- **Order:** The server gives every Op it accepts an increasing `seq`, and everyone applies Ops in that order.
 
-## 4. Protokol (`core/protocol.py`)
-Çerçeve: `>I` uzunluk + `B` bayrak (bit0 = zlib) + JSON. Maksimum mesaj boyutu 64 MB.
+## 4. Protocol (`core/protocol.py`)
+Frame: `>I` length + `B` flags (bit0 = zlib) + JSON. Maximum message size is 64 MB.
 
-| Yön | Mesaj | Alanlar |
+| Direction | Message | Fields |
 |---|---|---|
 | S→C | `challenge` | `nonce, session, auth` |
 | C→S | `hello` | `name, proof, client{app, app_version, python, plugin}` |
 | S→C | `welcome` | `user_id, users, locks, seq` |
 | S→C | `snapshot_begin` / `snapshot_chunk` / `snapshot_end` | `count` / `ops` / `seq` |
 | C→S | `ops` | `cid, ops[]` |
-| S→C | `ops` | `author, ops[]` (her op'ta `seq` var) |
+| S→C | `ops` | `author, ops[]` (every op has a `seq`) |
 | S→C | `ack` | `cid, seq, accepted[index], rejected[{i, uuid, reason}]` |
-| C→S | `lock` / `release` | `uuids[]` (`release` için `all: true` da olabilir) |
+| C→S | `lock` / `release` | `uuids[]` (`release` can also have `all: true`) |
 | S→C | `locks` | `changes{uuid: user_id \| null}` |
 | S→C | `lock_denied` | `uuids[]` |
 | C→S / S→C | `presence` | `data{frame, selection, camera}` / `user, data` |
@@ -70,482 +71,424 @@ Birden fazla kişinin aynı Cinema 4D sahnesinde gerçek zamanlı animasyon ve m
 | ↔ | `bye` | `reason` |
 | S→C | `error` | `code, message` |
 
-Her mesajda `v` (protokol sürümü) alanı bulunur. Kimlik doğrulama: `proof = HMAC-SHA256(şifre, nonce)`. Şifre ağ üzerinden hiç gönderilmez.
+Every message has a `v` (protocol version) field. Authentication: `proof = HMAC-SHA256(password, nonce)`. The password is never sent over the network.
 
-Büyük sayı dizileri `protocol.pack_floats` / `pack_ints` ile (little-endian `struct` + base64) taşınır.
+Large number arrays are carried with `protocol.pack_floats` / `pack_ints` (little-endian `struct` + base64).
 
-## 5. Kilitler (`core/locks.py`)
-- Seçince kilitleme: istemci, seçtiği nesneler için `lock` mesajı gönderir. Kilit, tüm alt düğümleri (çocuk nesneler, tag'ler, track'ler) de kapsar.
-- Bir düğümü düzenleme izni: düğüm kilitsizse **veya** kilit sende ise. Ata zincirindeki kilitler de geçerlidir.
-- Sunucu yetkisiz Op'ları reddeder. İstemci tarafında `reconcile` modülü yerel değişikliği cache'teki doğru hâle geri döndürür.
-- Bağlantısı kopan kullanıcının tüm kilitleri sunucu tarafından açılır.
+## 5. Locks (`core/locks.py`)
+- Lock on select: the client sends a `lock` message for the objects it selects. A lock also covers all child nodes (child objects, tags, tracks).
+- Permission to edit a node: the node is unlocked **or** the lock is yours. Locks on the ancestor chain apply too.
+- The server rejects unauthorized Ops. On the client side the `reconcile` module puts a local change back to the correct state held in the cache.
+- When a user's connection drops, the server releases all of their locks.
 
-## 6. Oturum
-- Host: kendi C4D'sinde `core.server` başlatır ve **kendi sunucusuna normal bir istemci gibi** `127.0.0.1` üzerinden bağlanır. Sahnesini `create` Op'ları olarak yükler (seed). Tek bir kod yolu olduğu için özel durum yoktur.
-- Join: `welcome` + snapshot alır, sahneyi **yeni bir belgede** kurar.
-- Host'un C4D'si kapanırsa oturum biter.
+## 6. Session
+- Host: starts `core.server` in their own C4D and connects to **their own server like a normal client** over `127.0.0.1`. Their scene is uploaded as `create` Ops (the seed). There is a single code path, so there is no special case.
+- Join: receives `welcome` + a snapshot and builds the scene **in a new document**.
+- If the host's C4D closes, the session ends.
 
-### İstemci tarafı (`core/client.py`, `core/mirror.py`)
-- `CollabClient`: Soketi arka plandaki bir thread'de çalıştırır. Ana thread `send_ops / lock / release / presence` ile mesaj gönderir ve `poll()` ile gelen mesajları alır. Yeni mesaj gelince `notify` çağrılır (C4D'de bu `SpecialEventAdd` olur).
-- `SessionMirror`: Sunucunun **onayladığı** durumun kopyasıdır: snapshot + diğer kullanıcıların Op'ları + bizim onaylanmış (ack) Op'larımız. Adaptör, canlı sahneyi bununla karşılaştırarak yerel değişiklikleri bulur. Reddedilen düzenlemeler de bu kopyaya göre geri alınır.
-- Sunucu tüm mesajları tek bir soket üzerinden ve `seq` sırasıyla gönderdiği için her istemcinin kopyası aynı sırayla güncellenir.
+### Client side (`core/client.py`, `core/mirror.py`)
+- `CollabClient`: runs the socket in a background thread. The main thread sends messages with `send_ops / lock / release / presence` and receives incoming messages with `poll()`. `notify` is called when a new message arrives (in C4D this becomes `SpecialEventAdd`).
+- `SessionMirror`: a copy of the state the server has **confirmed**: snapshot + other users' Ops + our own acknowledged (ack) Ops. The adapter finds local changes by comparing the live scene with it. Rejected edits are also rolled back according to this copy.
+- The server sends all messages over a single socket in `seq` order, so every client's copy is updated in the same order.
 
-## 6b. Güvenlik
-Bir oturum, başkasının bilgisayarına ağ üzerinden veri göndermek demektir. Kurallar:
+## 6b. Security
+A session means sending data over the network to someone else's computer. The rules:
 
-| Tehdit | Önlem | Nerede | Test |
+| Threat | Measure | Where | Test |
 |---|---|---|---|
-| Uzaktan kod çalıştırma | `pickle`/`eval` yok, sadece JSON. Python kodu taşıyan C4D öğeleri (Python tag/generator/effector/field, XPresso Python node) **varsayılan olarak senkronize edilmez** (Aşama 3+) | protocol, serializers | test_protocol |
-| Şifre sızması | Şifre ağdan gönderilmez (HMAC-SHA256 challenge). Diske ve log'a yazılmaz, kullanıldıktan sonra panelden silinir | protocol, ui_dialog | test_protocol, test_adapter |
-| Şifresiz oturum | Host olmak için en az 4 karakterli şifre zorunlu | core/session | test_controller |
-| Şifre deneme saldırısı | Bir IP'den 60 sn içinde 5 hatalı girişte o IP 60 sn engellenir | server | test_security |
-| Bellek doldurma | Giriş yapmamış bağlantıya en fazla 64 KB'lık mesaj, girişten sonra 64 MB. Sıkıştırılmış veride açılmış boyut da sınırlı (zip bombası) | protocol, server | test_security, test_protocol |
-| Mesaj seli | Bağlantı başına saniyede 1000 mesaj (ani yük için 3000) | server | test_security |
-| Okumayan istemci | Bekleyen çıktı 128 MB'ı aşarsa bağlantı kesilir | server | test_security |
-| Bozuk/kötü niyetli veri | Her Op ve mesaj alanı doğrulanır. Hatalı Op tek tek reddedilir, sunucu çökmez | model, server | test_model, test_security |
-| Başkasının işini bozma | Kilit sistemi, sunucu tarafında yetki kontrolü | locks, server | test_session |
-| Arayüz/log enjeksiyonu | Kullanıcı adlarından kontrol karakterleri temizlenir, ad 64 karakterle sınırlı | server | test_security |
-| Bağlantı gizliliği | Trafik **şifrelenmez**. İnternet üzerinden kullanım için Tailscale/ZeroTier (şifreli VPN) önerilir. Opsiyonel TLS, Aşama 8'de değerlendirilecek | belgeler | — |
-| Yerel ağda istenmeyen erişim | Windows Güvenlik Duvarı sorduğunda sadece "Özel ağlar" seçilmesi önerilir | belgeler | elle |
+| Remote code execution | No `pickle`/`eval`, JSON only. C4D items that carry Python code (Python tag/generator/effector/field, XPresso Python node) are **not synchronized by default** (Stage 3+) | protocol, serializers | test_protocol |
+| Password leak | The password is not sent over the network (HMAC-SHA256 challenge). It is not written to disk or the log, and it is cleared from the panel after use | protocol, ui_dialog | test_protocol, test_adapter |
+| Session without a password | Hosting requires a password of at least 4 characters | core/session | test_controller |
+| Password guessing | 5 wrong logins from one IP within 60 s block that IP for 60 s | server | test_security |
+| Memory exhaustion | At most a 64 KB message from a connection that has not logged in, 64 MB after login. The unpacked size of compressed data is limited too (zip bomb) | protocol, server | test_security, test_protocol |
+| Message flood | 1000 messages per second per connection (3000 for a short burst) | server | test_security |
+| Client that does not read | The connection is cut if pending output exceeds 128 MB | server | test_security |
+| Corrupt or malicious data | Every Op and message field is validated. A bad Op is rejected on its own and the server does not crash | model, server | test_model, test_security |
+| Breaking someone else's work | The lock system, with the permission check on the server | locks, server | test_session |
+| UI/log injection | Control characters are removed from user names, and names are limited to 64 characters | server | test_security |
+| Connection privacy | Traffic is **not encrypted**. For use over the internet, Tailscale/ZeroTier (an encrypted VPN) is recommended. Optional TLS will be considered in Stage 8 | docs | none |
+| Unwanted access on the local network | When Windows Firewall asks, choosing only "Private networks" is recommended | docs | manual |
 
-## 7. Adaptör (C4D) — sahne senkronizasyonu (Aşama 3)
+## 7. Adapter (C4D): scene synchronization (Stage 3)
 
 ```
- yerel düzenleme ──► tracker.scan() ──► Op'lar ──► session.send_ops() ──► sunucu
-                        │  (shadow'a hemen uygulanır)
- sunucu ──► mirror ──► "remote_ops" ──► sync.apply_remote():
-                                         1) önce tracker.scan() (kendi değişikliklerimizi gönder)
-                                         2) applier.apply() → shadow + C4D sahnesi
-                                         3) dokunulan atomların dirty değerleri + belge baseline'ı kaydedilir (yankı yok)
+ local edit ──► tracker.scan() ──► Ops ──► session.send_ops() ──► server
+                    │  (applied to the shadow right away)
+ server ──► mirror ──► "remote_ops" ──► sync.apply_remote():
+                                         1) first tracker.scan() (send our own changes)
+                                         2) applier.apply() → shadow + C4D scene
+                                         3) dirty values of the touched atoms + the document baseline are saved (no echo)
 ```
 
-- `ids.Registry`: uuid ↔ canlı atom. Kimlik `AddUniqueID(UNIQUE_ID_APP, 16 bayt)` ile saklanır. Aynı uuid bir taramada iki kez görülürse ikinciye yeni uuid verilir.
-- `tracker.Tracker`: Belge sayaçları değişmediyse hiçbir şey yapmaz. Değiştiyse nesne ağacını gezer: yapı (`parent/prev`) shadow ile karşılaştırılır, sadece kendi `DATA/MATRIX` sayacı değişen atomlar serileştirilir. Sadece `MATRIX` değiştiyse sadece transform parametreleri okunur (sürükleme sırasında hızlı yol). Op sırası: oluşturma/taşıma/güncelleme ağaç sırasıyla (ebeveyn önce), silmeler en sonda.
-- `applier.Applier`: Önce shadow'a uygular (doğrulama), sonra sahneye. Bir nesnenin verisi yüklenemezse (bozuk geometri vb.) nesne yine oluşturulur, hata log'a yazılır.
-- `sync.SceneSync`: Host'ta snapshot gelince aktif belge oturum belgesi olur ve tüm sahne gönderilir (seed). Misafirde snapshot **yeni bir belgede** kurulur. **Belge değişince ne olur** (`SceneSync._usable`, `SWITCH_GRACE` = 10 sn): oturum başlarken açık olan belgeler hatırlanır. (1) **Yeni bir proje açılırsa** (File > Open/New: o an yokmuş bir belge etkin olur) kullanıcı oturumdan **hemen ayrılır**; misafir için yalnızca kendi bağlantısı kapanır ve diğerleri kullanıcı listesinden düşer, **host için oturum herkes için biter** (sunucu host'un Cinema 4D'sinde çalışır) ve misafirlere bildirilir; panel günlüğüne nedeni yazılır ("You left the session: you opened another project" / "The session ended: ..."). (2) Oturum başlamadan önce de açık olan **başka bir sekmeye geçilirse** senkronizasyon durur ("paused", 10 sn içinde dönülmezse ayrılır); geri dönünce kaldığı yerden devam eder: kazara bir sekme geçişi oturumu öldürmesin diye. (3) **Oturum belgesi kapatılırsa** ayrılır. Ayrıldıktan sonra yeniden katılmak mümkündür (yeni belge kurulur).
-- `bridge`: MessageData plugin'i. `SpecialEventAdd`, 20 ms timer (iki zamanlayıcı en az 12 ms arayla çalışır) ve `EVMSG_CHANGE` ile tetiklenir. Panel açıksa `EVMSG_ASYNCEDITORMOVE` ile sürükleme sırasında da tarama yapılır.
+- `ids.Registry`: uuid ↔ live atom. The identity is stored with `AddUniqueID(UNIQUE_ID_APP, 16 bytes)`. If the same uuid is seen twice in one scan, the second one gets a new uuid.
+- `tracker.Tracker`: does nothing if the document counters have not changed. If they have, it walks the object tree: the structure (`parent/prev`) is compared with the shadow, and only atoms whose own `DATA/MATRIX` counter changed are serialized. If only `MATRIX` changed, only the transform parameters are read (a fast path while dragging). Op order: create/move/update in tree order (parent first), deletes last.
+- `applier.Applier`: applies to the shadow first (validation), then to the scene. If an object's data cannot be loaded (corrupt geometry and so on), the object is still created and the error is written to the log.
+- `sync.SceneSync`: on the host, when the snapshot arrives the active document becomes the session document and the whole scene is sent (seed). On a guest the snapshot is built **in a new document**. **What happens when the document changes** (`SceneSync._usable`, `SWITCH_GRACE` = 10 s): the documents that were open when the session started are remembered. (1) **If a new project is opened** (File > Open/New: a document that did not exist becomes active), the user **leaves the session immediately**. For a guest only their own connection closes and the others drop from the user list; **for the host the session ends for everyone** (the server runs in the host's Cinema 4D) and the guests are told. The reason is written to the panel log ("You left the session: you opened another project" / "The session ended: ..."). (2) If the user **switches to another tab that was already open before the session started**, synchronization stops ("paused", and the user leaves if they do not come back within 10 s). When they come back it resumes where it left off, so an accidental tab switch does not kill the session. (3) If the **session document is closed**, the user leaves. Rejoining after leaving is possible (a new document is built).
+- `bridge`: a MessageData plugin. It is triggered by `SpecialEventAdd`, a 20 ms timer (two timers run at least 12 ms apart) and `EVMSG_CHANGE`. While the panel is open, scanning also happens while dragging, through `EVMSG_ASYNCEDITORMOVE`.
 
-### Node verisi
+### Node data
 | kind | data |
 |---|---|
-| `object` | `{"p": {param anahtarı: değer}, "g": {...}}` (`g` sadece poligon nesnelerinde) |
+| `object` | `{"p": {param key: value}, "g": {...}}` (`g` only on polygon objects) |
 | `tag` | `{"p": {...}}` |
 
-- **Parametre anahtarı:** DescID'nin tamamı, `"id:dtype:creator/id:dtype:creator"` biçiminde (user data için iki seviye gerekir).
-- **Değerler:** sayı/bool/metin olduğu gibi; `{"V": [x,y,z]}` vektör/renk; `{"T": [pay, payda]}` BaseTime; `{"L": uuid}` senkronize edilen başka bir nesneye link.
-- **Desteklenen tipler:** Real, Long, Bool, String, Filename, Vector, Color, Time, Link. Diğerleri (spline, gradient, in/exclude...) şimdilik gönderilmez.
-- **Hariç:** isim (ayrı gider), katman linki, `ABS_*`/`GLOBAL_*` (türetilmiş değerler).
-- **Parametreler hiç silinmez:** Patch'lerde parametre için `del` gönderilmez. Farklı C4D sürümleri farklı parametrelere sahip olabilir; eski sürüm yeni sürümün parametrelerini silmemeli.
-- **Geometri (`g`):** `{"n": [nokta, poligon], "pts": pack_floats, "polys": pack_ints}`. Alıcıda indeks aralığı ve boyutlar doğrulanır. Aşama 3'te her değişiklikte geometrinin tamamı gönderilir; Aşama 6'da sadece değişen noktalar gönderilecek.
+- **Parameter key:** the whole DescID, in the form `"id:dtype:creator/id:dtype:creator"` (user data needs two levels).
+- **Values:** numbers/bools/strings as they are; `{"V": [x,y,z]}` vector/colour; `{"T": [numerator, denominator]}` BaseTime; `{"L": uuid}` a link to another synchronized object.
+- **Supported types:** Real, Long, Bool, String, Filename, Vector, Color, Time, Link. Others (spline, gradient, in/exclude...) are not sent for now.
+- **Excluded:** the name (sent separately), layer link, `ABS_*`/`GLOBAL_*` (derived values).
+- **Parameters are never deleted:** a patch never sends `del` for a parameter. Different C4D versions can have different parameters, and an older version must not delete a newer version's parameters.
+- **Geometry (`g`):** `{"n": [points, polygons], "pts": pack_floats, "polys": pack_ints}`. The receiver validates index ranges and sizes. In Stage 3 the whole geometry is sent on every change; in Stage 6 only the changed points will be sent.
 
-### Tip politikası (`serializers/nodes.py`)
-| Grup | Tipler | Davranış |
+### Type policy (`serializers/nodes.py`)
+| Group | Types | Behaviour |
 |---|---|---|
-| Kod taşıyan | Python generator/effector/field/tag, COFFEE, **Python/COFFEE düğümü içeren** XPresso | **Hiç gönderilmez, ağdan gelirse hiç oluşturulmaz.** (Standart düğümlerden oluşan XPresso grafiği veri sayılır ve gönderilir, bkz. "XPresso grafikleri".) Eklentinin kendi "Collab rig copy" Python tag'i yalnız bu bilgisayarda kalır, bu kural gereği hiç gönderilmez. Gelen nesne yerine boş bir Null konur. Tanıma iki katmanlıdır: sayısal ID'ler (R19'da `c4d.Opython` gibi sabitler yok!) **ve** tip adında "Python/COFFEE/XPresso" geçmesi |
-| Henüz desteklenmeyen tag'ler | Vertex map, normal ve gizli veri tag'leri (UVW ve seçim Aşama 6'da, Weight ve Pose Morph Aşama 8'de desteklendi) | Gönderilmez |
-| Bu sürümde olmayan tip | Yeni C4D'den gelen nesne, kurulu olmayan plugin nesnesi | Hiyerarşi bozulmasın diye yerine Null konur. Bu Null'ın verisi **hiç geri gönderilmez**, aslının üzerine yazılmaz |
-
-## 7a. Kilitler ve reconcile (Aşama 4)
+| Carries code | Python generator/effector/field/tag, COFFEE, XPresso **with a Python/COFFEE node** | **Never sent, and never created if it arrives over the network.** (An XPresso graph made of standard nodes counts as data and is sent, see "XPresso graphs".) The plugin's own "Collab rig copy" Python tag stays on this computer only and, by this rule, is never sent. In place of an incoming object an empty Null is created. Detection has two layers: numeric IDs (R19 has no constants like `c4d.Opython`!) **and** the type name containing "Python/COFFEE/XPresso" |
+| Tags not supported yet | Vertex map, normal and hidden-data tags (UVW and selection were added in Stage 6, Weight and Pose Morph in Stage 8) | Not sent |
+| Type missing in this version | An object from a newer C4D, an object of a plugin that is not installed | A Null is put in its place so the hierarchy does not break. The data of this Null is **never sent back** and never overwrites the original |
+## 7a. Locks and reconcile (Stage 4)
 
 ```
-seçim değişti ──► sync._sync_selection(): yeni seçilenler → LOCK, bırakılanlar → RELEASE,
-                  presence.selection güncellenir (session.set_presence alanları birleştirir)
-başkasının kilidi ──► seçim geri alınır (DelBit) + durum çubuğu/log: "X, Y tarafından düzenleniyor"
+selection changed ──► sync._sync_selection(): newly selected → LOCK, released → RELEASE,
+                  presence.selection is updated (session.set_presence merges the fields)
+someone else's lock ──► selection is undone (DelBit) + status bar/log: "being edited by X"
 
-tracker.scan():   kilitli düğümde değişiklik → GÖNDERİLMEZ
-                    • parametre/isim değişti, ebeveyn değişti, silindi → tracker.restore
-                    • kilitli ebeveynin altına yeni nesne/tag → tracker.discard
-                    • sadece sıra değişti → yok sayılır (kardeş taşınınca da olur)
-                  hiyerarşi değiştiyse önce hızlı bir ID taraması: izinsiz silme varsa
-                  önce geri yüklenir, sonra karşılaştırma yapılır (yan etkili sıra Op'u gitmez)
-applier.restore(): shadow'daki hâle döndür (silindiyse alt ağacıyla yeniden oluştur)
+tracker.scan():   a change on a locked node → NOT SENT
+                    • parameter/name changed, parent changed, deleted → tracker.restore
+                    • new object/tag under a locked parent → tracker.discard
+                    • only the order changed → ignored (also happens when a sibling moves)
+                  if the hierarchy changed, a quick ID scan runs first: if there is an
+                  unauthorized delete it is restored first, then the comparison is made
+                  (an order Op with side effects is not sent)
+applier.restore(): put it back to the state in the shadow (if deleted, recreate with its subtree)
 
-sunucu reddetti (yarış) ──► "rejected" ──► applier.reconcile(mirror.scene, uuid):
-                  shadow + sahne, sunucunun onayladığı hâle (mirror) getirilir
-lock_denied / başkası kilidi aldı ──► seçim bırakılır
+server rejected (race) ──► "rejected" ──► applier.reconcile(mirror.scene, uuid):
+                  shadow + scene are brought to the state the server confirmed (mirror)
+lock_denied / someone else took the lock ──► selection is released
 ```
 
-- **Yetki kuralları sunucuyla aynıdır:** Düzenleme için düğüm ya da atalarından biri başkasının kilidinde olmamalı (`mirror.editable`). Silme/taşıma için ayrıca hiçbir alt düğüm başkasının kilidinde olmamalı (`mirror.subtree_editable`).
-- **Ctrl+Z:** Başkasının kilitli nesnesini geri almak da bir "yerel değişiklik"tir: algılanır, gönderilmez ve geri yüklenir. SceneHook (sadece C++) gerekmez.
-- **Görünürlük:** Panelde "Being edited by others" listesi var. Viewport'ta renkli gösterim Aşama 7'de gelecek.
+- **The permission rules are the same as on the server:** to edit, neither the node nor any of its ancestors may be locked by someone else (`mirror.editable`). To delete or move, no child node may be locked by someone else either (`mirror.subtree_editable`).
+- **Ctrl+Z:** undoing someone else's locked object is also a "local change": it is detected, not sent, and restored. No SceneHook (C++ only) is needed.
+- **Visibility:** The panel has a "Being edited by others" list. Coloured display in the viewport arrives in Stage 7.
 
-## 7c. Animasyon (Aşama 5)
+## 7c. Animation (Stage 5)
 
 | Node | uuid | data |
 |---|---|---|
-| `track` (parent = animasyonlu nesne/tag) | `md5(sahip uuid \| parametre anahtarı)`: herkes aynı ID'yi hesaplar, track'e ID yazmak gerekmez | `{"d": parametre anahtarı, "p": track ayarları (before/after döngü, offset...), "k": {"<saniye>": key}}` |
-| `doc` | `"document"` | `{"fps", "min", "max", "lmin", "lmax"}` (saniye) |
+| `track` (parent = the animated object/tag) | `md5(owner uuid \| parameter key)`: everyone computes the same ID, so no ID has to be written into the track | `{"d": parameter key, "p": track settings (before/after loop, offset...), "k": {"<seconds>": key}}` |
+| `doc` | `"document"` | `{"fps", "min", "max", "lmin", "lmax"}` (seconds) |
 
-- **Key:** `{"v": değer, "i": interpolasyon, "tl"/"tr": tangent zamanları, "vl"/"vr": tangent değerleri, "q": {seçenek id: değer}}`. Seçenekler (auto tangent, clamp, break, mute, weighted...) ID ile doğrudan okunur; her key için description gezmek yavaş olurdu.
-- Key'ler **zamana göre** anahtarlanır. Böylece patch sadece değişen key'leri taşır. Uygulama tarafında eğri baştan kurulur (`FlushKeys` + `AddKey`), çünkü bu basit ve kesin, eğriler de küçük.
-- **Sadece değer track'leri (`CTbase` = 5350)** senkronize edilir. PLA, ses ve morph track'leri v1 sonrasına kaldı.
-- **Değişiklik algılama:** Belgenin `ANIMATION` sayacı (R19'da `ALL`) değişince track'ler taranır. Ölçümlere göre **tangent ve track ayarı değişiklikleri hiçbir sayacı artırmıyor**, bu yüzden ayrıca her `TRACK_SCAN_INTERVAL` (1 sn) içerik karşılaştırması yapılır. Yankı olmaması için karşılaştırma shadow ile değil, "son görülen/uygulanan canlı içerik" önbelleğiyle yapılır.
-- **Animasyonlu parametreler düz değer olarak gönderilmez.** Yoksa oynatma sırasında her karede güncelleme giderdi. Sadece bir vektörün X'i animasyonluysa X `null` gönderilir (alıcı kendi değerini korur), Y/Z normal senkronize olur.
-- **Geçerli kare (playhead) herkesin kendisine aittir.** Senkronize edilmez, sadece `presence.frame` olarak paylaşılır (saniyede en çok 5 kez). Panelde "frame N" olarak görünür.
-- **Kilitler track'lere de uygulanır:** Track'in ebeveyni nesnedir. Kilitli bir nesnenin key'lerini değiştirmek geri alınır, ona yeni track eklemek kaldırılır.
+- **Key:** `{"v": value, "i": interpolation, "tl"/"tr": tangent times, "vl"/"vr": tangent values, "q": {option id: value}}`. The options (auto tangent, clamp, break, mute, weighted...) are read directly by ID; walking the description for every key would be slow.
+- Keys are keyed **by time**, so a patch only carries the keys that changed. On the apply side the curve is rebuilt from scratch (`FlushKeys` + `AddKey`), because that is simple and exact and curves are small.
+- **Only value tracks (`CTbase` = 5350)** are synchronized. PLA, sound and morph tracks were left for after v1.
+- **Change detection:** when the document's `ANIMATION` counter (`ALL` on R19) changes, the tracks are scanned. According to measurements **tangent and track-setting changes do not increase any counter**, so a content comparison also runs every `TRACK_SCAN_INTERVAL` (1 s). To avoid an echo, the comparison is made not against the shadow but against a cache of the "last seen/applied live content".
+- **Animated parameters are not sent as plain values.** Otherwise an update would go out on every frame during playback. If only the X of a vector is animated, X is sent as `null` (the receiver keeps its own value) and Y/Z synchronize normally.
+- **The current frame (playhead) belongs to each person.** It is not synchronized, only shared as `presence.frame` (at most 5 times a second). It shows in the panel as "frame N".
+- **Locks apply to tracks too:** the parent of a track is the object. Changing the keys of a locked object is rolled back, and adding a new track to it is removed.
 
-## 7d. Modelleme (Aşama 6)
+## 7d. Modeling (Stage 6)
 
-Geometri ve tag içerikleri **parçalara (chunk) bölünerek** taşınır: her 128 nokta/poligon ayrı paketlenir, genel `diff` sadece değişen parçaları gönderir. 100.000 noktalı bir modelde tek bir noktayı taşımak ~4 KB'lık tek bir parça gönderir (test: `test_modeling.py`).
+Geometry and tag contents travel **split into chunks**: every 128 points/polygons are packed separately, and the generic `diff` only sends the chunks that changed. Moving a single point of a model with 100,000 points sends one chunk of about 4 KB (test: `test_modeling.py`).
 
-| Veri | Yer | Biçim |
+| Data | Where | Format |
 |---|---|---|
-| Poligon nesnesi | `object.data["g"]` | `{"n": [nokta, poligon], "pts": {parça: float x3}, "polys": {parça: int x4}}` |
-| Spline | `object.data["g"]` | `{"n": [nokta, segment], "pts": {...}, "seg": int (adet, kapalı)*, "tan": {parça: float x6}}` (tangent sadece varsa) |
-| Seçim tag'i (nokta/poligon/kenar) | `tag.data["s"]` | `{"n": eleman sayısı, "r": int (ilk, son)* kapalı aralıklar}` |
-| UVW tag'i | `tag.data["uv"]` | `{"n": poligon sayısı, "uv": {parça: float x8}}` (a-d köşelerinin u,v değerleri) |
+| Polygon object | `object.data["g"]` | `{"n": [points, polygons], "pts": {chunk: float x3}, "polys": {chunk: int x4}}` |
+| Spline | `object.data["g"]` | `{"n": [points, segments], "pts": {...}, "seg": int (count, closed)*, "tan": {chunk: float x6}}` (tangents only if present) |
+| Selection tag (point/polygon/edge) | `tag.data["s"]` | `{"n": element count, "r": int (first, last)* closed ranges}` |
+| UVW tag | `tag.data["uv"]` | `{"n": polygon count, "uv": {chunk: float x8}}` (u,v values of corners a-d) |
 
-- **Sayı değiştiyse tam yükleme, değişmediyse kısmi:** `n` aynıysa sadece değişen parçalar yazılır (`SetPoint`/`SetSlow`). `n` değiştiyse (extrude, kesme...) nesne `ResizeObject` ile baştan kurulur.
-- **Bağımlı tag'ler:** Topoloji değişince C4D, UVW tag'ini kendisi yeniden boyutlandırır. Alıcı tarafta nesne yüklendikten sonra seçim ve UVW tag'leri shadow'dan yeniden uygulanır (`Applier._reload_dependents`). Gönderen tarafta sahibinin eleman sayısı değişince **UVW ve seçim tag'leri o taramada hemen yeniden okunur**, böylece topoloji değişikliği tek bir paket olarak gider.
-- **Sayaç hareket ettirmeyen içerik**: seçim tag'i düzenlemeleri, spline tangent ve segment bayrakları (2023'te ölçüldü) ve **UVW düzenlemeleri** (2023'te sayaç artıyor ama R19'da UV düzenlemesi karşıya ulaşmadı, bu yüzden her sürümde periyodik kontrole alındı; kontrol bir UV tag'i için 50 ms'den pahalıysa o tag için atlanır, sayaçlar ve topoloji tetikleyicileri devrede kalır). Bunlar `TRACK_SCAN_INTERVAL` (1 sn) aralıkla karşılaştırılır, aralık taramanın kendi süresinin 10 katına kadar uzar (ana thread'in en fazla ~%10'u).
-- **Yavaş okuma koruması:** Bir atomun serileştirilmesi 30 ms'den uzun sürerse, süresinin 4 katı kadar beklenmeden tekrar okunmaz (dev modellerde nokta sürüklerken).
-- **Yeni UVW tag'i boş (0 eleman) doğar**; sahibine `ResizeObject(aynı, aynı)` çağrısı tag'i boyutlandırır. Alıcı bunu kendisi yapar (`load_uvw`).
-- **Kapsam dışı (v1):** n-gon bilgisi, vertex map ve vertex normal tag'leri (weight ve pose morph Aşama 8'de geldi), aktif nokta/poligon seçimi (kullanıcıya özel görünüm durumu), spline'ların ek tipleri.
+- **Full load if the count changed, partial if not:** if `n` is the same, only the changed chunks are written (`SetPoint`/`SetSlow`). If `n` changed (extrude, cut...), the object is rebuilt from scratch with `ResizeObject`.
+- **Dependent tags:** when the topology changes, C4D resizes the UVW tag itself. On the receiving side, after the object is loaded, the selection and UVW tags are re-applied from the shadow (`Applier._reload_dependents`). On the sending side, when the owner's element count changes, **the UVW and selection tags are re-read in that same scan**, so a topology change goes out as a single packet.
+- **Content that does not move a counter:** selection-tag edits, spline tangent and segment flags (measured on 2023), and **UVW edits** (on 2023 the counter goes up, but on R19 a UV edit did not reach the other side, so it is put on the periodic check in every version; if the check costs more than 50 ms for a UV tag it is skipped for that tag, while the counters and topology triggers stay active). These are compared every `TRACK_SCAN_INTERVAL` (1 s), and the interval stretches up to 10 times the scan's own duration (at most about 10% of the main thread).
+- **Slow-read guard:** if serializing one atom takes longer than 30 ms, it is not read again until 4 times that duration has passed (when dragging a point on huge models).
+- **A new UVW tag is born empty (0 elements);** calling `ResizeObject(same, same)` on its owner sizes the tag. The receiver does this itself (`load_uvw`).
+- **Out of scope (v1):** n-gon information, vertex map and vertex normal tags (weight and pose morph arrived in Stage 8), the active point/polygon selection (a view state specific to the user), extra spline types.
 
-## 7e. Görünürlük: kim nerede, kim neye tıkladı (Aşama 7)
+## 7e. Visibility: who is where, who clicked what (Stage 7)
 
-Blender'daki Multi-User eklentisi gibi: diğer kullanıcıların **kamerası** (renkli kamera ikonu + isim etiketi) ve **seçtiği nesneler** (kullanıcının renginde kutu + isim etiketi) 3B görünümde çizilir.
+Like the Multi-User plugin in Blender: other users' **cameras** (a coloured camera icon + a name label) and **selected objects** (a box in the user's colour + a name label) are drawn in the 3D view.
 
-- **Çizim nesnesi:** Python'dan sadece nesneler viewport'a çizim yapabilir (SceneHook sadece C++). Oturum boyunca belgede gizli (`NBIT_OHIDE`), kendi tipimizde (`PRESENCE_OBJECT`) bir nesne durur; `Draw()` yer paylaşımını çizer. Bu nesne **asla senkronize edilmez** (`nodes.object_supported`), oturum bitince silinir.
-- **Kamera:** Her kullanıcının aktif viewport kamerası (konum + sağ/yukarı/ileri eksenleri, 12 sayı) `presence.cam` olarak en çok saniyede 5 kez paylaşılır. Alıcı tarafta şekil, sonluluk ve eksenler doğrulanır (`overlay.parse_camera`). İkon boyutu izleyiciye uzaklıkla orantılıdır, ekranda hep benzer boyutta görünür.
-- **Seçim:** Başkasının seçtiği nesne = kilidi. Kutu, nesnenin yönlü sınır kutusudur (`GetMp`/`GetRad`/`GetMg`); boyutsuz nesnelere (null) en az 15 cm'lik kutu çizilir. Kilitli tag, sahibi olan nesne olarak çizilir.
-- **İsim etiketi:** Kullanıcının renginde çerçeve + `DrawHUDText` metni. Çerçeve rengi, metin rengi sabit olsa bile kimin kim olduğunu gösterir. Görüş açısı arkasındaki etiketler atlanır.
-- **Renk adları:** Sunucu her kullanıcıya bir renk ve ad verir (Red, Blue, Green...). Panelde `Ad [Renk]` olarak görünür: "mavi olan" diye konuşulabilir.
-- **Saf geometri:** `overlay.py` c4d import etmez; testleri C4D'siz çalışır.
-- **Sınır:** Piksellerin ekranda görünmesi ancak C4D penceresinde elle doğrulanır (CHECKLIST 7.x). Ama çizim kodu gerçek C4D çizim API'sine karşı `tests/c4d_real/draw_check.py` ile çalıştırılır (c4dpy'de gerçek, ekran dışı bir `BaseDraw` var): tüm çağrılar kabul edilir, kamera ve nesne kutusu doğru okunur, demo kaplama 22 çizgi + 2 isim etiketi çizer. Komut: `py -c "..."` yerine `c4dpy tests/c4d_real/draw_check.py` (sonuç `C4D_COLLAB_DRAW_OUT` dosyasına yazılır).
-- **Kayıt için iki dosya şart:** Nesne tipinin kaydı `res/c4d_symbols.h` ve `res/strings_us/c4d_strings.str` dosyalarını ister (içleri boş sayılabilir); yoksa "Could not initialize global resource" hatası verir. `GeResource.Init(<mutlak yol>)` ile doğrulandı: dosyalar yokken `False`, varken `True`.
+- **Drawing object:** from Python only objects can draw into the viewport (SceneHook is C++ only). During the session the document holds a hidden (`NBIT_OHIDE`) object of our own type (`PRESENCE_OBJECT`), and its `Draw()` draws the overlay. This object is **never synchronized** (`nodes.object_supported`) and is deleted when the session ends.
+- **Camera:** each user's active viewport camera (position + right/up/forward axes, 12 numbers) is shared as `presence.cam` at most 5 times a second. On the receiving side the shape, finiteness and axes are validated (`overlay.parse_camera`). The icon size is proportional to the distance from the viewer, so it always looks about the same size on screen.
+- **Selection:** someone else's selected object = their lock. The box is the object's oriented bounding box (`GetMp`/`GetRad`/`GetMg`); objects with no size (nulls) get a box of at least 15 cm. A locked tag is drawn as the object that owns it.
+- **Name label:** a frame in the user's colour + `DrawHUDText` text. The frame colour shows who is who even when the text colour is fixed. Labels behind the field of view are skipped.
+- **Colour names:** the server gives each user a colour and a name (Red, Blue, Green...). It shows in the panel as `Name [Colour]`, so people can say "the blue one".
+- **Pure geometry:** `overlay.py` does not import c4d, so its tests run without C4D.
+- **Limit:** that the pixels appear on screen can only be checked by hand in a C4D window (CHECKLIST 7.x). But the drawing code is run against the real C4D drawing API with `tests/c4d_real/draw_check.py` (c4dpy has a real off-screen `BaseDraw`): all calls are accepted, the camera and object box are read correctly, and the demo overlay draws 22 lines + 2 name labels. Command: `c4dpy tests/c4d_real/draw_check.py` (the result is written to the `C4D_COLLAB_DRAW_OUT` file).
+- **Two files are needed for registration:** registering the object type requires `res/c4d_symbols.h` and `res/strings_us/c4d_strings.str` (they can be empty); without them it gives "Could not initialize global resource". Verified with `GeResource.Init(<absolute path>)`: `False` without the files, `True` with them.
 
-### Canlı pencerede bulunan kayıt hatası (Aşama 7)
-`RegisterObjectPlugin`, çağrıyı yapan **modülün** global `__res__` değişkenini arar; bu değişken sadece `.pyp` dosyasında vardır. Kayıt `presence.py` içinden yapılınca üç kayıt biçiminin hepsi `ReferenceError: Could not find required '__res__'` ile düştü ve çizim nesnesi hiç oluşmadı (kilitler ve eşitleme normal çalıştı). Çözüm: kayıt çağrısı `.pyp` içindeki `_register_object` fonksiyonundan yapılır; `__res__` yoksa `GeResource` ile kurulur. Panel ve mesaj plugin'leri bu değişkene ihtiyaç duymadığı için sorun yoktu. Kayıt sonuçları `c4d_collab.log` dosyasına yazılır.
+### Registration bug found in the live window (Stage 7)
+`RegisterObjectPlugin` looks for the global `__res__` variable of the **module** that makes the call, and only the `.pyp` file has it. When registration was done from `presence.py`, all three registration forms failed with `ReferenceError: Could not find required '__res__'` and the drawing object was never created (locks and sync worked normally). Fix: the registration call is made from the `_register_object` function in the `.pyp`, and if `__res__` is missing it is built with `GeResource`. The panel and message plugins do not need this variable, so they were fine. Registration results are written to `c4d_collab.log`.
 
-### Canlı denemede bulunan iki sorun ve çözümleri (Aşama 7)
+### Two problems found in a live trial, and their fixes (Stage 7)
 
-**1. R19'da nesnelerin içi görünüyordu** (küpün ön yüzü yok, silindirde tırtıklar). Kaplama nesnesi `DRAWPASS_OBJECT` geçişinde, sahnedeki nesnelerden **önce** çiziyor ve ekran matrisini/çizgi durumunu değiştirip bırakıyordu. 2023 her nesne için durumu sıfırlıyor, R19'un eski çizim hattı sıfırlamıyor; sonradan çizilen küp ve silindir bozuk durumla çizildi. Çözüm (canlı denemeyle düzeltildi): önce `DRAWPASS_HIGHLIGHTS` denendi ama C4D bu geçişi kendi vurgu renginde (beyaz, `GetHighlightPassColor`) çizer ve R19 hiç göstermez; bu yüzden renkler kayboldu. Asıl neden 2B çizimin (isim etiketleri) derinlik testini kapatıp bırakmasıdır. Şimdi `DRAWPASS_OBJECT`: kaplama nesnesi belgenin **en sonunda** durur (`presence.move_last`, `SceneSync.tick` kontrol eder), böylece sahne nesnelerinden sonra çizilir; ayrıca `Draw()` bitince `USE_Z/SETZ/OGL_CULLING` parametrelerini, `SetDepth(True)` ve nesne matrisini geri verir. Çizgiler kullanıcının renginde. Çizim nesnesi ayrıca eklenirken seçili kalıyordu, artık bırakılmıyor.
+**1. On R19 the insides of objects were visible** (the cube had no front face, the cylinder had jagged edges). The overlay object drew in the `DRAWPASS_OBJECT` pass **before** the scene's objects, and it changed the screen matrix/line state and left it that way. 2023 resets the state for every object, but R19's older drawing pipeline does not, so the cube and cylinder drawn afterwards were drawn with a broken state. Fix (corrected with a live trial): first `DRAWPASS_HIGHLIGHTS` was tried, but C4D draws that pass in its own highlight colour (white, `GetHighlightPassColor`) and R19 does not show it at all, so the colours disappeared. The real cause is that the 2D drawing (name labels) turns the depth test off and leaves it off. Now `DRAWPASS_OBJECT` is used: the overlay object sits **at the very end** of the document (`presence.move_last`, checked by `SceneSync.tick`), so it draws after the scene objects. Also, when `Draw()` finishes it restores the `USE_Z/SETZ/OGL_CULLING` parameters, `SetDepth(True)` and the object matrix. The lines are in the user's colour. The drawing object also stayed selected when it was added; it is no longer left selected.
 
-**2. Kamera ve nesne hareketi kasıyordu.**
-- *Gönderim:* Kamera artık saniyede 20 kez (eskiden 5) gidiyor, 0,5 cm / 0,002 ölü bölgeyle (`sync.CAMERA_INTERVAL`).
-- *Alıcıda yumuşatma:* Gelen kamera duruşuna gösterilen duruş zamana bağlı üstel olarak yaklaşır (`overlay.CameraSmoother`, τ = 70 ms, bir çağrı sayısına değil geçen gerçek süreye bağlı; takılan arayüzde kamera uçmasın diye adım 250 ms ile sınırlı). İlk görülen kamera yerinde belirir.
-- *Nesne hareketi:* Başkasının sürüklediği nesnenin konum/dönüş/ölçeği artık anında yazılmaz, iki güncelleme arası süre kadar (30–120 ms) `smoothstep` ile kayar (`tween.TransformTweens`). Her adımdan sonra tracker'a "bunu ben yazdım" denir (yankı yok); dönüş kısa yoldan döner; yalnızca düz transform güncellemeleri kayar, diğerleri anında uygulanır. Silme/taşıma/geri yükleme kaymayı iptal eder.
-- *Hafif yeniden çizim:* Sadece kamera/seçim/kullanıcı listesi değişince `DrawViews` (görünüm yeniden çizimi); sahne değişince `EventAdd` (yeniden değerlendirme). Eskiden her mesajda `EventAdd` vardı.
-- *Zamanlayıcı:* Panel açıkken 33 ms (30 Hz) ağ, tarama ve animasyonu sürer.
-- *Panel:* `local_addresses()` her yenilemede DNS sorgusu yapıyordu (bazı sistemlerde yüzlerce ms ana iş parçacığını kilitler); 60 sn önbellek. Panel metinleri sadece değiştiğinde yazılır.
+**2. Camera and object movement stuttered.**
+- *Sending:* the camera now goes out 20 times a second (it was 5), with a dead zone of 0.5 cm / 0.002 (`sync.CAMERA_INTERVAL`).
+- *Smoothing on the receiver:* the pose shown moves toward the incoming camera pose exponentially over time (`overlay.CameraSmoother`, τ = 70 ms, based on real elapsed time rather than a call count; the step is capped at 250 ms so the camera does not fly when the interface hangs). A camera seen for the first time appears in place.
+- *Object movement:* the position/rotation/scale of an object someone else is dragging is no longer written instantly. It glides with `smoothstep` for the time between two updates (30-120 ms) (`tween.TransformTweens`). After each step the tracker is told "I wrote this" (no echo); rotation takes the short way round; only plain transform updates glide, and others are applied immediately. Delete/move/restore cancels the glide.
+- *Light redraw:* `DrawViews` (view redraw) only when the camera/selection/user list changes; `EventAdd` (re-evaluation) when the scene changes. Before, every message called `EventAdd`.
+- *Timer:* while the panel is open, 33 ms (30 Hz) drives the network, the scan and the animation.
+- *Panel:* `local_addresses()` made a DNS query on every refresh (on some systems that blocks the main thread for hundreds of ms); now cached for 60 s. Panel texts are only written when they change.
 
-### Host olunca R19'da kasma (gerçek rig: 1540 öğe, 106 XPresso, 51 Pose Morph, 335 adsız etiket)
+### Stutter on R19 when hosting (a real rig: 1540 items, 106 XPresso, 51 Pose Morph, 335 unnamed tags)
 
-Oturum açılınca iki zamanlayıcı (panelinki 16 ms, Cinema 4D'nin kendi mesaj zamanlayıcısı 20 ms) aynı işi iki kez yapıyordu ve her tarama bütün sahneyi geziyordu; yüzlerce ifadesi olan rig her değerlendirmede belge sayacını oynattığı için tam taramalar sürekli çalışıyordu. Düzeltmeler: (1) `bridge.timer_pump` iki zamanlayıcıyı 12 ms'den sık çalıştırmaz, panel 20 ms; (2) `EventAdd` (sahne yeniden değerlendirme: rig ifadeleri dahil) en çok 25/sn, geciktirilen istek kaybolmaz (`_EVAL_PENDING`); (3) tam taramalar işlemcinin yaklaşık %10'unu aşmaz (`FULL_SCAN_DUTY`); (4) etiket sayımı yalnızca paylaşma taramasında yapılır; (5) yalnızca dönüşümü değişen nesne için açıklamanın tamamı değil, önbelleğe alınmış üç parametre okunur (`params._dump_ids`); (6) seçim çerçevesi 400 poligon / 600 kenardan büyük mesh için kutuya düşer (R19 günlüğünde 850-1690 çizgi görüldü); (7) tanı: 30 ms'den uzun tam taramalar ve 40 ms'den uzun pump turları günlüğe (`Full scan took`, `Slow pump`) 10 sn'de bir yazılır.
-Pose Morph etiketleri (yüz) artık senkronize ediliyor, bkz. "Yüz: Pose Morph".
+When a session opened, two timers (the panel's at 16 ms and Cinema 4D's own message timer at 20 ms) did the same work twice, and every scan walked the whole scene. A rig with hundreds of expressions moves the document counter on every evaluation, so full scans ran constantly. Fixes: (1) `bridge.timer_pump` does not run the two timers more often than every 12 ms, and the panel uses 20 ms; (2) `EventAdd` (scene re-evaluation, including rig expressions) runs at most 25 times a second, and a delayed request is not lost (`_EVAL_PENDING`); (3) full scans stay under about 10% of the processor (`FULL_SCAN_DUTY`); (4) tag counting is only done in the sharing scan; (5) for an object whose only change is its transform, three cached parameters are read instead of the whole description (`params._dump_ids`); (6) the selection frame falls back to a box for meshes bigger than 400 polygons / 600 edges (850-1690 lines were seen in the R19 log); (7) diagnostics: full scans longer than 30 ms and pump rounds longer than 40 ms are written to the log (`Full scan took`, `Slow pump`) once every 10 s.
+Pose Morph tags (face) are now synchronized, see "Face: Pose Morph".
+## 7h. Rigs and big scenes: what went wrong and what fixed it
 
-### Karakter rigi ve büyük sahnede akıcılık (canlı geri bildirim: 1511 öğelik karakter sahnesi)
+Characters with large rigs (a real test scene: 1,500 items, 100+ XPresso tags, 50+ Pose Morph tags) exposed many problems. The long measurement diary is kept in the original Turkish document on the `dev` branch. This is the English summary of the rules that came out of it.
 
-- **Cilt ağırlıkları:** Weight tag artık taşınır (`serializers/rig.py`, veri bölümü `"cw"`): eklem listesi (uuid), eklem başına dinlenme durumu (4 matris + uzunluk) ve nokta başına ağırlıklar (0..65535'e nicemlenmiş, C4D'nin kendi duyarlığı). Eklemler uuid ile adlanır; alıcı kendi eklem nesnelerini bağlar. Eklemler etiketten daha derinde olabilir (aynı toplu işlemde sonradan oluşur), bu yüzden `Applier._reload_weights` toplu işlem bitince ağırlıkları yeniden bağlar. Etiket, henüz taranmamış bir eklemin kimliğini isterse kimlik hemen verilir (`Registry.ensure`).
-- **Ölçülen tuzak:** `GetWeightMap` seyrek haritalarda kısa ve yanlış liste döndürür (2023'te `[0,0,0,0,1]` → `[0]`); ağırlıklar `GetWeight(eklem, nokta)` ile nokta nokta okunur.
-- **Boş poligon nesnesi:** `SetAllPoints([])` "Invalid object length" fırlatıyordu (gerçek rigde üç nesne bu yüzden yüklenmedi); boş mesh için çağrılmaz.
-- **Neyin yerel kaldığı artık raporlanır:** oturum açılırken `Tracker.unsynced_report()` kod taşıyan nesneleri (altındaki çocuklarla), kod taşıyan ve desteklenmeyen etiketleri sayar ("Not shared (stays local): 3 x XPresso (tag) ..."), panel günlüğüne ve dosyaya yazılır. XPresso/Python ile sürülen kontroller karşıda çalışmaz, ama sonuçta değişen dönüşümler yine eşitlenir.
-- **Tarama maliyeti (ölçüldü: 1500 nesne + 120 malzeme, 2023):** tam tarama 8-12 ms, 60 Hz'lik zamanlayıcıyla ana iş parçacığını doyuruyordu (kasma). Düzeltmeler: (1) seçili nesneler sürüklenirken yalnızca seçili nesnelere bakılır (`Tracker._scan_selected`, ~0-1 ms); gerisini en geç 0,5 sn'de bir tam tarama bulur, hızlı bakış bir şey bulmazsa hemen tam tarama yapılır, tam tarama süresi işlemcinin yaklaşık üçte birinden fazlasını almaz; (2) R19'da "animasyon" sayacı her değişiklikte arttığı için her taramaya iz taraması ekliyordu, artık iz karşılaştırması yalnızca aralıkla yapılır; (3) malzeme/shader gezintisi yalnızca MATERIAL/SHADER sayacı oynayınca (R20+); (4) `bridge.tick` bir taramanın maliyetinin iki katı kadar dinlenir (en çok 0,25 sn); (5) seçim çerçevesi için 2000 poligon / 3000 kenardan büyük mesh kutuya düşer, dünya kenarları nesne durduğu sürece önbellekten gelir.
+**Skin weights and joints**
+- The Weight tag travels (`serializers/rig.py`, data section `"cw"`): the joint list (uuids), the rest state per joint, the per-point weights (quantized to 0..65535) and the tag's bind matrix (`GetGeomMg`, sent as `"gm"`). Without the bind matrix a guest bound the mesh where it currently stands and Skin shifted every point by the difference.
+- Joints are named by uuid and the receiver binds its own joint objects (`Applier._reload_weights` rebinds after a batch). `GetWeightMap` returns a wrong short list on sparse maps, so weights are read point by point with `GetWeight(joint, point)`.
+- `SetAllPoints([])` raises "Invalid object length", so it is never called for an empty mesh.
+- Layers are synchronized (`"ly"` in the document data, `serializers/doclayers.py`) and every object or tag names its layer through `ID_LAYER_LINK`. Layer flags change evaluation, and a hidden `JOINTS` layer hides the bone drawings. Layers are added or updated, never deleted.
 
-### Rig misafirde bozuluyordu: bağlantılar, Include/Exclude listeleri, Mesh deformer (canlı geri bildirim)
+**Links, lists and deformers**
+- Forward references: a snapshot is built in depth order, so a link to an object that does not exist yet used to be skipped silently. `Applier._relink_forward` rewrites such links after the batch.
+- Include/Exclude lists (IK "Objects", Mesh deformer "Cages", Skin list) travel as `{"I": [[uuid, flags], ...]}`; members that are not shared are skipped.
+- The Mesh deformer's hidden bind data is computed from its "Cages" list. On the guest the `Initialize` button is pressed again after the list is in place (`Applier._bind_deformers`). Initialize also adds Display and Compositing tags to the cages in 2023, and those are removed again so the cages look like the host's.
+- Hidden tag data of IK, IK-Spline and Constraint tags (integer, float, vector and matrix values that are not in the description) travels in `"hd"` (`serializers/hiddendata.py`). Without it the IK-Spline tag on the guest never moved its spline.
 
-Gerçek `Fight_test11.c4d` (744 nesne, 28 ağırlık etiketi) c4dpy'de tarayıcı → sunucu anlık görüntüsü → uygulayıcı yolundan geçirilip özgün dosyayla karşılaştırıldı (aynı karede hesaplatılarak). Eklem sırası, rest state ve ağırlıklar birebir aynı çıktı; bozukluk şuralardan geliyordu:
+**XPresso and user data**
+- An XPresso graph travels as data (`serializers/xpresso.py`, `"xp"`): nodes, settings, ports and connections. **Only standard operators are carried** (400001000-400001161, no COFFEE). A graph with a Python, COFFEE or third-party node stays local, and incoming data can never create such a node.
+- Object-node ports only carry a display name ("Position . Y"). The DescID is found by looking that name up in the connected object's description, using the port data type to tell same-named parameters apart (an object's "Scale" and a user-data "Scale"). Port numbers follow first use, so the same numbers are produced on the guest with spare parameters and the spare ports are deleted.
+- Constraint tag weights appear under the target object's name in XPresso (`8502 + target index` in Parent mode, `10002/10012` and `2116` in Transform mode), so ports are mapped to targets by order (`xpresso._constraint_parameters`).
+- User data (`serializers/userdata.py`, `"ud"`) is rebuilt with `SetUserDataContainer` using the same ids. Filename parameters are written as item assignments, not plain strings, otherwise XPresso logs `CRITICAL: Stop` on every read.
+- Parameters driven by a graph (`"dr"`) are not edits: both sides evaluate the same graph (`Tracker._mask_driven`). The same goes for Vibrate (camera shake) tags, joints that an enabled IK or IK-Spline chain solves, and objects carried by an enabled Constraint tag.
+- **Global Matrix ports** of the XPresso Object node cannot be built from Python on R19 (`AddPort` always returns `None`). Those connections are applied another way: a local Python tag "Collab rig copy" (fixed code inside the plugin, never sent) copies the matrix, with a per-tick fallback (`xpresso.apply_mirrors`).
+- On R19, `Description.GetParameter(id)` needs a second argument (`ar`), otherwise it raises `TypeError` and no vector port name could be resolved. `_level_name` tries one argument, then two.
 
-- **İleri başvuru (bağlantı):** anlık görüntü derinlik sırasıyla kurulur; bacak eklemindeki IK etiketi, kendinden daha derindeki `r_end` ekleminin bağlantısını yazdığında hedef henüz yoktu ve bağlantı sessizce atlanıyordu (IK zincirinin ucu yok → bacaklar 20-42 cm sapıyordu). `Applier._relink_forward`: toplu işlemden sonra, nesne/etiketlerin hedefi sonradan oluşan bağlantılarını (ve listelerini) yeniden yazar (`params.relink`). Gerçek C4D kontrolü: `c4dpy tests/c4d_real/links_check.py`.
-- **Include/Exclude listeleri** (`CUSTOMDATATYPE_INEXCLUDE_LIST`: IK "Objects", Mesh deformer "Cages", Skin listesi...) artık taşınır: `{"I": [[uuid, bayraklar], ...]}`; paylaşılmayan üyeler atlanır.
-- **Mesh deformer** (tip 1024543, "Cages" listesinden hesapladığı gizli ~22 KB bağ verisi parametre değil): misafirde `Initialize` düğmesi, Cages listesi yerine oturduktan sonra (oluşturulunca ya da Cages değişince) yeniden basılır (`serializers/deformers.py`, `Applier._bind_deformers`). Ölçüldü (2023): aynı Cages → aynı deforme noktalar, hangi karede bağlandığından bağımsız. Bu olmadan kol/bacak/gövde "autoweighted" katmanları hiç deforme olmuyor, parçalar havada kalıyordu.
-- **Bilinen sınır (ölçüldü, çözülmedi):** (1) ~~XPresso etiketleri karşıya geçmez~~ (çözüldü, aşağıdaki “XPresso grafikleri ve kullanıcı verisi” bölümü); (2) yüz mesh'leri (kaş, dil, ağız, diş, göz) ve iki hedef spline'ı kopyada hâlâ farklı deforme oluyor (eklem/ağırlık/rest state aynı, nedeni bulunamadı); (3) Normal etiketi (156 adet) taşınmaz.
-- **Misafirin karesi (asıl neden, ölçüldü):** Misafir belgesi kare 0'da açılıyordu, host'un rig'i ise animasyonuyla kendi karesinde (gerçek dosyada 185) duruyordu. Animasyonlu denetçiler her tarafta kendi karelerinde değerlendirilir, animasyonsuz değerler host'un karesinden gelir; sonuç anlamsız bir karışım (aynı dosya, kare farklıyken 744 nesnenin 496'sı sapıyordu, en çok 15 m; aynı karede 231'i, en çok 4 cm ve bunlar yüz sürgüleri). Düzeltme: host `host=True` ile karesini duyurur, misafir ilk duyuruda host'un karesine geçer (`SceneSync._align_time`), sonrasında herkes kendi oynatma kafasını korur. Ölçüm: `c4dpy tests/c4d_real/rig_check.py --same-frame` (bayraksız çalıştırınca misafir kare 0'da kalır).
-- **Misafir kendi rig değerlendirmesini "düzenleme" diye geri gönderiyordu (canlı: kilit uyarı seli, bel tutulunca iki pencerede farklı duruş; ölçüldü):** Katıldıktan hemen sonra, kimse dokunmadan, misafirin izleyicisi 74 güncelleme gönderiyordu (`c4dpy tests/c4d_real/rig_check.py --same-frame`, "ops the guest would send" satırı). Kökler: (1) **Constraint etiketi** hedefleri bağlanınca ofsetlerini kendisi yeniden hesaplar: host'unkinden 13 m uzak (1366 cm); artık yeni Constraint etiketleri bir kez değerlendirilir, sonra host'un değerleri yazılır (`Applier._settle_constraints`); (2) rig'in yazdığı dönüşümler küçük gürültüyle oturur (eklem 0,02, null 0,005 cm); sabit 1e-7 eşiği bunu "değişiklik" sayıyordu, iki taraf birbirinin gürültüsünü gönderip duruyor, kilitli eklem sürekli "geri alınıyordu"; artık konum 0,02 cm, dönüş 0,003 rad, eklemde 0,05 cm / 0,03 rad altı düzenleme sayılmaz (`tracker.NOISE`, `JOINT_NOISE`); (3) Weight etiketi ağırlıkları 16 bit saklar, C4D 1/65535 farklı geri verir: aynı deri sayılır (`rig.same_weights`); (4) Mesh deformer'ın `Initialize`'ı kafeslere kendi Display/Compositing etiketlerini ekler, misafir bunları host'un kafeslerine eklemeye çalışıyordu: yerel kalır (`tracker.skip`); (5) B-Spline türü spline tanjant tutmaz, "tan silindi" gönderilmez. Sonuç: katılımdan sonra giden güncelleme 74 → 1 (Vibrate etiketli kamera, 0,3 cm).
-- **Deneyip vazgeçilen (yanlış):** misafirde IK/Constraint etiketlerini kapatıp host'un sonuçlarını olduğu gibi göstermek. Kapatınca eklem dönüşleri sıfırlanıyor (host `l_knee` 1,412 rad, misafir 0), çünkü IK sonucu REL değerlerine yazılıyor ve etiket kapanınca eklem başlangıca dönüyor; çözücüler misafirde çalışmalı.
-- **Günlük paneli:** yalnızca kimin katıldığı/ayrıldığı ve oturumun açılıp kapanması; "kilitli, değişikliğin geri alındı" gibi tekrarlayanlar durum çubuğuna gider.
+**Echo and noise (a guest must not send back what it only computed)**
+- The guest starts at the host's frame (`SceneSync._align_time`); after that everyone keeps their own playhead. Changing the frame must not send edits.
+- Constraint tags recompute their offsets after targets are linked, so new Constraint tags are evaluated once and then the host's values are written (`Applier._settle_constraints`). New solved joints start at scale 1 and the guest's IK brings them to the host's value.
+- A rig writes transforms with small noise, so edits below 0.02 cm / 0.003 rad (joints 0.05 cm / 0.03 rad) are not edits (`tracker.NOISE`, `JOINT_NOISE`). Weight tags store 16 bit, so 1/65535 differences count as the same skin. Different versions store some values differently (UVW, Texture and Phong tags, joint transforms), so after applying remote data the local reading is remembered and only a difference from that reading counts as an edit (`Tracker._capture_applied`).
+- Tags a guest creates locally (Display, Compositing, "Collab rig copy") are skipped (`tracker.skip`) and are never counted as the "previous sibling" of a shared tag.
+- At session start the plugin reports what stays local ("Not shared (stays local): 3 x XPresso (tag) ...") in the panel log and the log file.
 
-### Misafirde kollar sahne boyunca uzuyor, gövde yok: Skin bağlama matrisi ve morph numaraları (asıl neden)
+**Speed on big scenes**
+- Only selected objects are looked at while dragging (`Tracker._scan_selected`), a full scan follows at least every 0.5 s and never takes more than about a third of the processor, and while the timeline plays or the user dragged in the last 0.6 s only the quick look runs. Full scans are limited to about 10% of the main thread (`FULL_SCAN_DUTY`), scene re-evaluation (`EventAdd`) to 25 per second, and the two timers never run more often than every 12 ms.
+- Material and shader walks only run when the MATERIAL/SHADER counter moves. Selection outlines fall back to a box for big meshes. Diagnostics (`Full scan took`, `Slow pump`, `Pump stats`) are written to the log at most every 10 s.
+- The log `c4d_collab.log` rotates at 5 MB (+2 old files).
 
-Önceki ölçümler yalnızca nesne **matrislerini** karşılaştırıyordu (en büyük fark 0,77) ve bu yüzden asıl bozukluğu göremiyordu: matrisler aynıyken Skin’in çizdiği mesh 17 m uzaktaydı. Doğru ölçüm, her mesh’in çizildiği **noktaları** (deform cache, dünya uzayında) karşılaştırmak ve iki tarafı render alıp bakmaktır. c4dpy ile `Fight_test11.c4d`, 354 mesh:
+**R19 guest specifics (measured on real R19)**
+- Pose Morph numbers are not reused by `AddMorph` on R19, so `morph.NUMBER_MAP` translates the sender's numbers into local ones for XPresso ports and animation tracks.
+- A graph that could not be built completely is marked `xpresso.DEGRADED`, and its `xp` data is pinned to the shadow so the host never rebuilds its working graph from a guest's incomplete one.
+- A texture path that C4D shortens to a bare name is redirected to the cached copy (`assets.apply_files`, repeated every 2 s by `Applier.repair_textures`). R19 adds a default Reflectance layer when the channel is switched on, so extra layers are removed (`layers.has_extra`).
 
-| | en büyük nokta farkı | 1 cm’den fazla kayan mesh |
-|---|---|---|
-| eski kod (kullanıcının gördüğü: kollar ekran boyunca uzamış, gövde yok) | 1714 cm | 62 |
-| Weight etiketinin bağlama matrisi taşınınca | 24 cm | 14 |
-| morph numaraları da korununca | 24 cm (`R_Local_Goal`, bir kontrolün 8 noktalı şekli) | 2 |
+**Known limits:** hand edits to joints inside an IK chain are not sent while IK is on; some face meshes still deform slightly differently on the guest; Normal tags are not carried; XPresso Object nodes tied to a Layer are not built; the R19 fixes above for ports were reproduced by simulation and still need a real R19 check.
 
-- **Weight etiketinin bağlama matrisi (`GetGeomMg`):** mesh’in bağlandığı andaki matrisi. Taşınmıyordu; misafirde yeni etiket mesh’i *şu an durduğu yerde* bağlıyor (host: 37,5/112,5/0, misafir: -473/114/1615) ve Skin her noktayı bu fark kadar kaydırıyordu. Eklemler, ağırlıklar ve rest state birebir aynıydı; Skin kapatılınca noktalar da aynıydı. Artık `"cw"` içinde `"gm"` olarak gider; yazıldıktan sonra Skin’in yeniden hesaplaması için etikete ve mesh’e `MSG_UPDATE` + `SetDirty` gönderilir (`serializers/rig.py`).
-- **Pose Morph numaraları:** bir morph’un kaydırıcısı `(4000, 1001 + 100 * numara)`’dır ve XPresso portları, animasyon izleri ve parametreler morph’u bu numarayla tanır, listedeki yeriyle değil. Listede yeri değişmiş bir morph numarasını korur (host’ta bacak: `foot side` 2, `bend` 3, `foot front` 1; "AddMorph en düşük boş numarayı alır" yalnızca 2023'te doğru, R19 hep bir sonrakini verir, aşağıdaki R19 bölümüne bak); misafir morph’ları liste sırasıyla kurunca numaralar kayıyor ve sürücüler yanlış şekli oynatıyordu (`bend` `foot front`’un değerini alıyordu). `AddMorph` en küçük boş numarayı verir (2023’te ölçüldü): misafir önce her numarayı bir yer tutucuyla doldurur, her morph eklenmeden hemen önce kendi numarasını boşaltır, artan yer tutucular silinir (`serializers/morph.py`, `"i"`).
-- **Doğrulama:** `tests/c4d_real/live_rig_check.py` artık mesh noktalarını da karşılaştırır. Eski kodla misafir render’ı kullanıcının ekran görüntüsündeki bozukluğu birebir verir, yeni kodla host’unkiyle aynıdır.
+## 7i. Face: Pose Morph (Stage 8)
 
-### Misafirde kemik halkaları görünüyor, gövde parçaları birleşmiyor: katmanlar ve IK-Spline’ın gizli verisi
+Code: `serializers/morph.py`.
 
-Önceki düzeltmeden sonra misafir yalnızca host’un karesinde (185) doğruydu. Başka bir karede host ile misafiri aynı kareye getirip karşılaştırınca (`frames_probe`: iki belgeyi 0, 40, 100, 185, 260’a alıp tüm mesh noktaları ve nesne konumları) 200 mesh 2-3 m sapıyordu; bel/kalça birleşim yerleri bu yüzden kopuyordu. İki neden:
+- **Data (tag section `"pm"`):** `{"n": owner's point count, "m": [{"n": name, "d": {chunk: float x3}}...], "s": [strength | null]}`. Morphs keep the tag's order; 0 = base pose, moves no points. `"d"` holds differences **relative** to the base in chunks of 128 points; chunks that are all zero are not sent. Strength `null` = driven by a track, and the receiver keeps its own value. Only point morphs travel; position/rotation/scale, UV, parameter, map and hierarchy morphs stay local.
+- **Read/write:** a morph is opened with `SetMode(EXPAND, REL)`, `GetFirst().GetPoint/SetPoint`, then `SetMode(COLLAPSE, AUTO)`. The strength slider of morph `i` is DescID `(4000, 1001 + 100*i)`, which is **not** in the tag's description, so the generic parameter serializer does not see it.
+- **Counters:** editing morph points, renaming, adding a morph and changing the active pose move **no counter**, so there is a periodic check. Reading is expensive (about 3 ms for 10,000 points, writing 17 ms), so points are only re-read when the tag's **signature** (mode, active pose, morph names, point count) changes.
+- **The tag writes its result into the mesh's own points** (no deform cache). The mesh is only taken as the base when the tag is in edit mode with the base pose selected (`morph.mesh_shows_base`); otherwise the shared geometry is kept, so a slider move never sends the deformed face as geometry.
+- **Receiver:** all points are written to a Pose Morph mesh, then the base pose is stored again (`morph.store_base`). If the morph list differs the tag is rebuilt from scratch. The tag is always kept in animation mode. Edit/animation mode (`ID_CA_POSE_MODE`) is each user's own view and is not sent.
+- **Locks:** on a locked face, a change of strengths only (rig evaluation) is not rolled back; a change of shape or name is. If the point counts do not match, points are not written and a warning is logged.
+- Morph numbers are kept: drivers (XPresso ports, tracks) recognise a morph by its number, not its position in the list. `AddMorph` gives the lowest free number on 2023, so the guest fills every number with a placeholder, frees each morph's own number just before adding it, and deletes the extra placeholders.
 
-- **Katmanlar senkronize edilmiyordu.** Host’ta 7 katman var (`JOINTS` “View” kapalı: 108 eklem gizli; `MESH`, `CONTROLS`, ...), misafirde hiç yoktu. Sonuçlar: (1) eklemlerin yuvarlak kemik çizimleri misafirde görünüyordu; (2) katmanın Animasyon/İfade/Deformer/Üreteç bayrakları değerlendirmeyi de değiştirir. Artık katmanlar belge verisinde (`"ly"`, `serializers/doclayers.py`: ad, ebeveyn, bayraklar, renk) gider ve her nesne/etiket katmanını `ID_LAYER_LINK` bağlantısıyla (uuid) söyler (`params.py` bu parametreyi artık dışlamıyor). Katmanlar eklenir/güncellenir, silinmez.
-- **IK-Spline etiketinin gizli verisi taşınmıyordu.** Bel spline’ının noktalarını (3 nokta, kontrol nesnelerine bağlı) IK-Spline etiketi her değerlendirmede yazar (etiketi kapatınca nokta sabit kalıyor). Etiket bunun için açıklamada (description) adı geçmeyen kendi konteyner anahtarlarını kullanır (`10000 = 3`, ...). Bunlar yoktu, misafirdeki etiket spline’ı hiç oynatmıyordu: spline host’un 185. karedeki noktalarında takılı kalıyor, omurga/kalça/bacaklar her karede yanlış duruyordu. Bu değerleri kopyalayınca misafirin spline’ı host gibi hareket etti. Artık `"hd"` bölümü (`serializers/hiddendata.py`) IK, IK-Spline ve Constraint etiketlerinin bu tamsayı/ondalık/vektör/matris değerlerini taşır.
-- **Düzenleme sayılmayanlar:** IK-Spline’ın hareket ettirdiği spline’ın noktaları (çıktısıdır), Constraint/IK etiketlerinin gizli sayaçları (her değerlendirmede değişir) misafirden host’a gönderilmez (`Tracker._mask`).
-- **Sonuç (c4dpy, 2023):** host ile misafir aynı karede 0, 40, 100, 185, 260’ta: en büyük mesh noktası farkı 301 cm → 24 cm (tek mesh, aşağıya bakın), 1 cm’den fazla kayan mesh 200 → 2 (frame 100’de 41). Gerçek ağ oturumunda (`live_rig_check.py`): host rig’i değişmez, misafirin gönderdiği sahte güncelleme 5.
-- **XPresso portlarının DescID’si (bu turda iyileşti):** (1) Constraint etiketinin hedef ağırlıkları XPresso’da hedef nesnenin adıyla görünür (“world”, “local”); description bu adı bilmez, parametre `8502 + hedef sırası`dır, port numarası sırasıyla eşlenir (`_constraint_parameters`). (2) Aynı adlı kullanıcı verisi öğeleri (sol/sağ el için `Tool`, `Texture`, `Size`) port numarası sırasıyla eşlenir (`_same_names`). (3) Condition/Math düğümlerinin veri tipi bağlandıkları şeyden gelir (`SetPortType` onları ayarlayamaz): bağlantılar başarısız olanlar yeniden denenerek kurulur. Sonuç: host ile misafirin grafik farkı olan etiket sayısı 10 → 4; eksik 24 bağlantıdan yalnızca aletlerin doku seçimi (10 Condition → Bitmap dosya portu) kaldı.
-- **Bilinen küçük fark:** `R_Local_Goal` (8 noktalı kontrol kutusu) host’ta kutu, misafirde bir noktaya çökmüş görünür: host’taki Pose Morph etiketi dosya yüklendikten sonra yeniden hesaplanmamış, misafirinki “off” şeklini (güç 1,0) uyguluyor. Host etiketi yeniden hesaplarsa aynısı olur.
+## 7j. Materials, shaders and texture files
 
-### Uzuv uzatılınca misafirde bozuluyordu, kafa tutma (World Head) portları yanlış parametreye bağlanıyordu
+- **New node kinds:** `material` (document level, sibling chain), `shader` (parent: a material or a shader; nested shaders) and `asset` (texture file). `KIND_ORDER` = asset, material, shader, object, tag, track, doc, so files and materials come first in a snapshot.
+- **Data:** the same generic parameter serializer as objects and tags (`params.dump`, driven by the description), so plugin materials such as Corona's travel too if that plugin is installed on the other side. A type that is not installed becomes a standard material placeholder.
+- **Links:** shader links such as `MATERIAL_COLOR_SHADER` are rewritten after a batch (`Applier._relink`). Every scan first gives ids to all materials and shaders.
+- **Change detection:** `GetDirty` per material and shader, and the document counters `HDIRTYFLAGS_MATERIAL` and `HDIRTYFLAGS_SHADER` (on R19: ALL). Shader children are only walked with `GetFirstShader()/GetNext()`.
+- **Texture files (`serializers/assets.py`):** a relative path is searched next to the document, in `tex` and in the global texture folders. A file (at most 25 MB, image extensions only) becomes an `asset` node whose uuid is its SHA-1, so a file travels once (300 MB total per session). The receiver uses the file on its own path if it exists, otherwise a cached copy; the redirect stays local. Safety rules: image extensions only, the file name is cleaned and can never leave the cache folder, the unpacked size is limited, and the content must match the SHA-1.
+- **Reflectance layers (`serializers/layers.py`):** a new standard material is born with one default reflectance layer, so a material without layers would get an extra specular on the other side. The layer list travels as `"rl"`, and layer parameters are keyed by layer **order**, not by C4D's version-specific ids (`to_canonical`/`to_local`). Needs R17.032+.
+- **Message size:** `protocol.chunk_ops` splits batches and snapshot parts by count and estimated bytes (8 MB).
+- **Known limits:** the inner layer list of the Layer shader, node-based materials and sound/video files do not travel; shaders that carry Python stay local.
 
-Önceki ölçümler rigi yalnızca olduğu gibi (animasyonun kendi karelerinde) karşılaştırıyordu; bu turda host'ta kontroller **sürüklenip** değişiklik misafire canlı oturum yolundan (izleyici → sunucu → uygulayıcı) gönderildi ve ikisi karşılaştırıldı (`c4dpy tests/c4d_real/limb_check.py`, 2023, `Fight_test11.c4d`).
+## 7k. Selection shape and smooth motion
 
-- **Uzuv uzatma (asıl neden, ölçüldü):** sol bacak hedefi (`L_Foot_Goal`) bacağın erişimini aşacak kadar uzağa çekilince IK etiketinin Squash/Stretch'i bacağı uzatır; uzatma eklemin **ölçeğine** (host'ta uyluk Y ölçeği 1,5) yazılır. Host bu ölçeği (ve eklemlerin konum/dönüş sonuçlarını) düzenleme diye gönderiyordu; misafir onları yazıp **kendi IK'sini de çalıştırdığı için** uzatma, o anki ölçek üzerinden bir kez daha yapıldı: hedef uzaklaştıkça misafirde 2,0, 2,5... (host'ta 1,5'te kalıyor), diz/topuk 18-130 cm kayıyor, bacak mesh'i ekran görüntüsündeki gibi uzuyordu. Düzeltme: oturumda kullanılan bir IK ya da IK-Spline etiketinin zincirindeki eklemlerin (etiketin nesnesinden uç eklemine kadar) konum, dönüş, ölçek ve eklem uzunluğu değişiklikleri düzenleme sayılmaz (`Tracker.solved_joints`, `_mask`; etiket kapalıysa, "Use IK" kapalıysa ya da IK/FK = FK ise zincir çözülmüş sayılmaz, eller eklemleri kullanabilir). Zincir canlı etiketlerden okunur: XPresso'nun sürdüğü anahtar shadow'da eski değerde kalır.
-- **Uzamış bacakla katılma:** katılan taraf eklemleri host'un uzamış ölçeğiyle (1,5) alıyor ve kendi IK'siyle 2,0'a uzatıyordu; yeni oluşan çözülmüş eklemler ölçek 1'den başlar, misafirin IK'si host'a ulaştırır (`Applier._reset_solved_scale`). Not: bir eklem zincirinin dinlenme ölçeği 1 değilse (yansıtılmış eklem) bu varsayım yanlıştır; bu rigde bütün eklemler 1.
-- **Okuma tuzağı:** etiket parametresi `tag[2002]` ile okunursa etiketin konteynerine bakılır, misafirde yeni yapılmış etikette orada anahtar yoktur (`None`); açıklama kimliğiyle (`GetParameter(DescID)`) okunur.
-- **Kafa tutma (World Head) ve bacak karışımı portları (ölçüldü):** rigde kafa eklemindeki Constraint etiketi (Transform, iki hedef: `[dont touch] head_world`, `head_world2`) ve bacaklardaki Constraint etiketleri XPresso'dan sürülüyor. Grafikteki Object düğümünün portları "world"/"local"/"Strength" diye adlanır; description bu adları bilmez, ad aranırken ilk eşleşme alınıyordu: ağırlıklar `8502/8503` (Parent grubunun "Weight" şablonu), güç `2203` (Parent grubunun Strength'i). Gerçek parametreler Transform modunda **10002/10012** (hedef n: `10001 + 10 n` bağlantı, `+1` ağırlık) ve **2116**'dır (host'ta düğüm portları bunlara bağlı, adı hedef nesnenin adı). Misafirdeki grafik böylece Transform modunda hiçbir işi olmayan parametreleri sürüyordu; gerçek ağırlıkları yalnızca host'tan gelen değerler belirliyordu (bu rigde değerler aynı çıktı, ama misafir kendi hesabını yapamıyordu). Artık Constraint etiketi için açık olan modların Strength'i ve hedef ağırlıkları description'dan okunur (`xpresso._constraint_parameters`); port numaralarının sırasıyla hedeflere eşlenir. Düzeltmeden sonra host ve misafirde World Head 0/1 değişince ağırlıklar ve kafa aynı (0,00 cm).
-- **Asıl kafa tutma nedeni: R19 misafirinin logu (canlı oturumdan okundu):** misafir R19 idi (host 2023) ve `c4d_collab.log`'unda 1054 kez `Cannot build the ports of XPresso node` vardı: R19'da `Description.GetParameter(id)` ikinci argümanı (`ar`, AtomArray) ister, `TypeError` fırlatır; Object düğümü portlarının adlarını parametre kimliğine çeviren `_name_table` bu yüzden hiçbir vektör parametresi ("Position . X") için çalışmıyordu ve bu düğümlerin portları kurulmuyordu (kafa/el eklentilerinin dünya dönüşümünü kopyalayan, kafa karışımını süren grafikler yarım kalıyordu). `_level_name` önce tek, `TypeError` olursa iki argümanla çağırır (`tests/adapter/test_solvers.py::Release19Test`). 2023'te bu hata yoktu, bu yüzden c4dpy ölçümleri kafayı gösteremedi. R19'un hatası 2023'te taklit edilince (`tests/c4d_real/r19_sim.py r19`: `_level_name` hep `TypeError` verir) belirti yeniden üretildi: 241 nesne (kafa, kafa ve el eklentileri, dil) host'tan 200-284 cm uzakta, 68 mesh yanlış yerde; normal yolda 0. **R19'da bu düzeltme gerçek R19 ile henüz denenmedi** (c4dpy yok); denemek için R19'da oturuma katılıp logda `Cannot build the ports` kalmadığına bakmak yeter.
-- **Her taramada reddedilen taşıma (aynı log, 439 000 satır):** Mesh deformer'ın `Initialize`'ı kafeslerin başına yalnızca bu bilgisayarda olan Display/Compositing etiketleri ekler (`tracker.skip`); tarama, sonraki paylaşılan etiketin "önceki kardeşi" olarak bu yerel etiketi sayıyordu, oturumun bunu kardeş bilmediği için her taramada 30 `move` üretiliyor ve `prev is not a sibling` diye reddediliyordu (c4dpy'de ölçüldü: 30 → 0). Günlük şişiyor ve her tarama boşuna işleniyordu (R19 günlüğünde 200 ms'lik "Slow pump"lar). Yerel etiket/nesne artık `prev` olarak sayılmaz (`Tracker._visit_tags`, tarama döngüsü; `SkippedTagTest`).
-- **Kare değiştirmek tek başına "düzenleme" gönderiyordu (canlı geri bildirim: guest 170'te, host 185'te; kırmızı/mavi/yeşil kontroller vücuttan kaymış):** iki taraf kendi oynatma kafasında olduğu için rig'in o karedeki çıktısı karşıya "düzenleme" diye gidiyordu: Constraint etiketli nesneler (kafa, dirsekler, el aletleri) ve XPresso'nun **Global Matrix** portuyla sürülen nesneler (kafa ve el eklentileri; port bir parametre portu olmadığından `"dr"` listesine hiç girmiyordu). Ölçüm (c4dpy, sadece zaman kaydırılırken): taraf başına kare adımında 16-19 güncelleme (Head Attachments, Left/Right Hand Attachments, head, l_elbow, r_elbow, left/right_tools); düzeltmeden sonra 0. Karşı taraf bunları kendi karesinde yeniden hesapladığı için 2023'te son durum zaten aynıydı; ama bir sürümde rig tam değerlendirilemiyorsa (R19'da yukarıdaki port hatası) bu değerler göndericinin karesinde asılı kalıyordu: yalnızca host'un karesinde doğru görünme, başka karede kayma (`r19_sim.py r19`: kare 185'te 0, 0/60/100'de 241 nesne). Düzeltme: (1) Global Matrix portu bağlı bir nesnenin konum/dönüş/ölçeği `"dr"` içine girer (`xpresso.TRANSFORM_KEYS`); (2) açık bir Constraint etiketinin taşıdığı nesnenin dönüşümü düzenleme sayılmaz (`Tracker.constrained_objects`). Etiket kapalıysa (ya da Constraint'siz) elle düzenleme eskisi gibi gider. Kontrol: `c4dpy tests/c4d_real/frames_check.py` (host 178'de kalır, guest 190'a oynar; iki taraf da kendi karesini gösterir, kare kaydırmak güncelleme göndermez).
-- **Seçince misafirin rigi bozuluyordu, R19 host / 2023 misafir (canlı geri bildirim: Auges kontrolleri vücuttan ayrı, parçalar düz renkli, "doku gitti" sanıldı):** başka sürüm, aldığı bazı değerleri farklı saklar (UVW, Texture ve Phong etiketleri, eklem dönüşümleri); okununca göndericinin verisinden farklı çıkarlar, kimse dokunmadan. Bir nesneyi seçmek sayaçlarını oynatıyordu: fark ya "düzenleme" diye host'a gidiyordu (host logu: 267 işlem, `joints`, `UVW`, `Texture`, `Phong`) ya da nesne host'ta kilitliyse her taramada gölgeden "geri alınıyordu" ve misafirin rigi bozuluyordu. 2023 host / R19 misafir ile görülmemişti (o yönde misafir R19'du). Düzeltme: uzak veri yazılınca atomun bu taraftaki okuması saklanır (`Tracker._capture_applied`); bir fark yalnızca o okumadan da farklıysa düzenleme ya da geri alma sayılır (`_differs_where`, parametre parametre). Gerçek bir düzenleme saklananı siler. Kontrol: `c4dpy tests/c4d_real/version_echo_check.py` (Phong açısı 180'in üstünde gönderilir, misafir 180 okur; eski kodla 40 gönderim ve 336 geri alma, yeni kodla 0 ve 0; gerçek düzenleme yine gider).
-- **Kafesler misafirde düz renkli bloklar olarak çiziliyordu, hareket sırasında dokulu gövdenin üstünde (canlı: R19 host, 2023 misafir; `dump_skin.py` iki tarafta: Skin, Mesh deformer, katman ve görünürlük, noktaların yeri aynı, 4 cm içinde):** 2023'ün Mesh deformer'ı `Initialize` basılınca kafeslere bir **Display** etiketi (kendi gölgeleme modu) ve bir **Compositing** etiketi ekliyor; host'un kafeslerinde ikisi de yok. Misafir onları yerel sayıp tutuyordu, kafesler başka gölgelemeyle çiziliyordu. R19'un Initialize'ı bunları eklemiyor, o yüzden 2023 host / R19 misafir düzeninde hiç görülmedi. Düzeltme: `Applier._bind_deformers` bu iki türü (`deformers.INITIALIZE_TAGS`) Initialize'dan sonra siler; kafesler host'taki gibi görünür. Bağ verisi deformer'da kalır (limb_check: meshler aynı).
-- **Doğrulama:** `c4dpy tests/c4d_real/limb_check.py` (sürükleme: bacak, kollar, uzamış bacakla katılma, World Head, Constraint portları). Eski kodla: bacak 133 cm, katılma 37,5 cm, uyluk ölçeği 2,0 / 1,5 (4 başarısız); yeni kodla hepsi geçer (en büyük fark 0,30 cm, kılıç mesh'i). `tests/adapter/test_solvers.py`: zincir bulma, maske, port eşlemesi (sahte c4d). Gerçek iki süreçli oturum (`live_rig_check.py`) değişmedi: 7/7.
-- **Bilinen sınır:** (1) zincirdeki eklemlere elle yapılan düzenleme (dinlenme konumunu değiştirmek gibi) IK açıkken karşıya gitmez; IK/FK = FK ya da etiket kapalıyken gider. (2) Dil ve ayak topuk hedefleri (`Joint.2.Goal`) 60 cm gibi uç sıçramalarla birkaç cm farklı çözülür; adım adım sürüklenince aynı. (3) Dilin IK-Spline kontrolleri hâlâ farklı sonuç verebilir (yüz, ölçülmedi).
+- **Selected object's own shape:** the object's real edges are drawn in the user's colour instead of a box (`presence.object_outline`). The mesh is only re-read when the object's `GetDirty(DATA|CACHE)` changes. Empty objects, splines and big meshes (over 6,000 polygons / 9,000 edges) fall back to a box.
+- **Object motion:** an object is shown one update interval behind and moves **linearly** from each received pose to the next (`tween.TransformTweens`, a queue of segments), so the speed stays constant between updates. If more than 0.25 s accumulates, the queue is dropped.
+- **A bug found by real C4D:** creating an unregistered object or tag type raises a bare `BaseException` rather than a normal error, which `except Exception` does not catch. An unknown type coming over the network could have broken a whole sync round. `compat.allocate()` and the boundary points catch `BaseException` (except `KeyboardInterrupt`/`SystemExit`, `core.compat.is_fatal`).
 
-### XPresso grafikleri ve kullanıcı verisi: misafirde rig’in kuralları
+## 7l. MCP page: an AI assistant can use a live Cinema 4D (Stage 8, development aid)
 
-Katılan taraftaki bozuk rig’in asıl nedeni, rig’i süren kuralların (78 XPresso etiketi) ve kontrol panelinin (nesne **kullanıcı verisi**: Skin, Scale, Tool, Texture, Controls...) karşıya hiç geçmemesiydi: misafirde kontrol sürgüleri sınırlanmıyor, ölçek/görünürlük/yüz şekilleri sürülmüyor, XPresso’nun okuyacağı kullanıcı verisi alanları yoktu. Ölçüm (`c4dpy tests/c4d_real/rig_check.py --same-frame`, 744 nesne): aynı karede en büyük konum farkı 4,07 → **0,77**; farklı karede (eski hâl) 15 m’ye çıkıyordu.
-
-- **XPresso grafiği veri olarak taşınır** (`serializers/xpresso.py`, etiket verisinde `"xp"`): düğümler, ayarları, portlar, bağlantılar. **Güvenlik:** yalnızca standart operatörler (400001000-400001161, COFFEE hariç) taşınır; Python/COFFEE/üçüncü taraf düğüm içeren grafik eskisi gibi yerel kalır ve ağdan gelen veri bu düğümleri hiçbir zaman oluşturmaz (`load` reddeder).
-- **Object düğümü portları:** port yalnızca görünen adı söyler (“Position . Y”); parametrenin DescID’si, bağlı nesnenin description’ında o ad aranarak bulunur. Ad benzersiz değildir (“Scale” hem nesne ölçeği hem kullanıcı verisi kaydırıcısı), bu yüzden port veri türü (Real/Vektör/Tamsayı...) ayırt eder. Port numaraları (`1000000n` giriş, `2000000n` çıkış, ikisi için tek sayaç) düğümün parametreyi **ilk kullanım sırasıdır** ve silinen port numarasını boş bırakır; düğümün ayar konteyneri bu numaralarla tutulduğundan misafirde aynı numaralar yedek parametrelerle üretilip yedek portlar silinir (yoksa her değerlendirmede `CRITICAL: Stop [ge_container.h]`).
-- **Kullanıcı verisi** (`serializers/userdata.py`, `"ud"`): eleman tanımları `SetUserDataContainer` ile **aynı id’lerle** oluşturulur; elemanın konteynerinin kendi id’si veri türüdür (`BaseContainer(dtype)`), başka id’yle kopya başka bir elemandır (DescID türü -1 çıkar). Konteyner içeriği `serializers/containers.py` ile JSON’a çevrilir (Vector, Matrix, bağlantı, iç içe konteyner, SplineData, Filename).
-- **Filename parametreleri:** `SetParameter` kullanıcı verisindeki dosya adını düz metin (130) olarak yazıyordu; XPresso o alanı her okuyuşta `CRITICAL: Stop` veriyordu. `params.load` dosya adı alanlarını öğe ataması (`atom[desc] = yol`) ile yazar (Filename, 131).
-- **Protection etiketi:** misafirde etiket eklenip sınırları yazılınca nesne sınırına (0) çekiliyordu (host’ta -2,05 olan kaydırıcı misafirde 0; HEAD’de de vardı). Tüm etiketler yerleştikten sonra dönüşümler host’un gönderdiğine göre yeniden yazılır (`Applier._restore_transforms`).
-- **Sürülen parametreler düzenleme değildir** (`"dr"`: bir grafiğin bağlı giriş portlarının yazdığı parametreler): iki taraf da aynı grafiği değerlendirir, sonuç düzenleme sayılmaz. `Tracker._mask_driven` bu değerleri (vektör bileşeni düzeyinde) ve Pose Morph kaydırıcılarını oturumdaki değere çevirir. Katıldıktan sonra misafirin gönderdiği sahte güncelleme: 74 → 8 (kalanlar: kamera ve IK/Constraint gürültüsü).
-- **Gerçek oturumda doğrulama (2023, iki c4dpy süreci, gerçek ağ):** `c4dpy tests/c4d_real/live_rig_check.py` host `Fight_test11.c4d`’yi açar, guest ağdan katılır. Sonuç: guest’te 744/744 nesne eşleşir, en büyük fark 0,75 (aynı kare 185), günlükte hata yok; **host’un rig’i guest katıldıktan sonra değişmez (en büyük hareket 0,0000)**; guest’in kendiliğinden gönderdiği güncelleme 3. İki ek düzeltme bunun için gerekti: (a) **Vibrate etiketi** (kamera sarsıntısı) her değerlendirmede farklı sonuç verir, guest bunu “düzenleme” diye gönderiyor ve host kamerasını 0,3-0,6 oynatıyordu; sarsıntı büyüklüğündeki dönüşüm değişiklikleri düzenleme sayılmaz (`tracker._mask_shake`); (b) guest’teki Pose Morph etiketinde XPresso portu yüzünden host’ta olmayan parametre anahtarları görünüyordu; Pose Morph etiketinde yeni parametre anahtarı düzenleme sayılmaz (morph’lar `"pm"` ile gider).
-- **Bilinen sınır:** (1) Constraint etiketinin “world”/“local” portları: bu tur çözüldü (yukarıdaki "Kafa tutma" maddesi), bu cümle eskidir; (2) bir Layer’a bağlı Object düğümünün portları kurulmaz (katmanlar eşitlenmez); (3) 10 grafik host ile birebir aynı değil (bu iki neden). Doğrulama: `c4dpy tests/c4d_real/xpresso_check.py` (host grafiği ile misafirde kurulan grafik aynı mı). **R19’da bu sürüm gerçek Cinema 4D ile denenmedi** (c4dpy yalnızca 2023’te var; `SplineData.GetKnots`, `SetKnot` ve `AddPort` imzaları 2023’e göre yazıldı, R19 için geri dönüşler konuldu).
-
-### R19 misafiri: ölçülen kısıtlar ve bunlara karşı yapılanlar
-
-R19 misafirinde rig'in kafa, bacak, yüz ve doku tarafı 2023'ten farklı çalışıyor; hepsi gerçek R19'da ölçüldü (`tests/c4d_real/tools/`: `r19_ports_probe.py`, `dump_foot.py`, `dump_textures.py`; sonuçlar `%LOCALAPPDATA%\Temp\hp\`).
-
-- **XPresso Object düğümünün Global Matrix portları (30000001 / 40000001) Python'dan kurulamıyor:** `AddPort` her kimlik, bayrak ve DescID biçiminde `None` döndürüyor (`AddPortIsOK` doğru dese de); parametre portları (DescID ile) çalışıyor. Kafa/ek parça grafikleri ("kontrolün global matrisini nesneye kopyala") bu yüzden kurulamıyordu. Karşılık: kurulamayan Global→Global bağlantısı `xpresso._MIRRORS`'a yazılır ve **iki yoldan** uygulanır: (1) hedef nesneye eklenen yerel Python tag'i "Collab rig copy" (`xpresso._copy_tag`; ifade geçişinin içinde, rig'in kendi ifadelerinden sonra çalışır, oynatmada da aynı karede; kod sabit ve eklentinin içinde, ağdan hiçbir şey karışmaz, tag gönderilmez), (2) yedek olarak her pompa turunda `xpresso.apply_mirrors` (`bridge.mirror`). Oturum bitince/yeniden başlayınca kopyalar ve tag'ler silinir (`xpresso.clear_session`).
-- **`AddPort` merdiveni (`xpresso._add_port`):** mesajsız, mesajlı, bağlı nesne parametresinden yeniden bağlayıp, DescID'nin yaratıcısız biçimleri; hangi basamağın hangi sürümde kazandığı kayıtlı değil, yalnız Global Matrix için hepsinin başarısız olduğu ölçüldü. Port reddi `AddPortIsOK` sonucuyla loglanır.
-- **Pose Morph numaraları:** R19 `AddMorph`'ta numarayı yeniden kullanmaz (`[0, 3, 4]` ≠ gönderilen `[0, 1, 2]`), numaralar eşitlenemez. `morph.NUMBER_MAP` {gönderici numarası → buradaki} tutar; XPresso portları (`xpresso._slider`) ve animasyon izleri (`tracks.find_or_create_track`) buradaki numaraya çevrilir, iz kendi tarafından raporlanırken gönderici anahtarına geri çevrilir (`morph.sender_key`) ki iz aynı uuid'yi taşısın. Tag bu numaralarla zaten kuruluysa her güncellemede yeniden kurulmaz.
-- **Eksik kurulan grafik geri gönderilmez:** kurulamayan bağlantısı olan ya da gönderenin grafiğinden farklı kurulan XPresso tag'i `xpresso.DEGRADED`'a girer, tracker onun `xp` verisini shadow'daki ile sabitler (`Tracker._mask`); aksi halde host kendi çalışan grafiğini misafirin eksik grafiğinden yeniden kurardı.
-- **Doku:** C4D mutlak yolu bir süre sonra çıplak ada kısaltabiliyor; belgesi klasörsüz misafir dosyayı bulamıyor ve karakter siyah kalıyor. `assets.apply_files` yazdıktan sonra tutulan değeri okur, bulunamıyorsa önbellekteki kopyaya yönlendirir; `Applier.repair_textures` bunu her 2 sn'de tekrarlar. Kısaltılmış ad düzenleme sayılmaz (`assets.original_value`).
-- **Yansıma:** R19, Reflection kanalı açılınca kendiliğinden varsayılan bir katman ekliyor; `layers.has_extra` parametrelerden sonra ve her 2 sn'de fazlasını siler.
-- **Hız (R19'da tam tarama ~500 ms):** zaman çizelgesi oynarken ya da son 0,6 sn'de sürüklenmişken tam tarama atlanır, yalnızca seçili nesnelere bakılır (`SceneSync._animating`, `Tracker.scan(quick_only=True)`); oynarken eklentinin kendi `EventAdd` çağrısı yapılmaz (zaman çizelgesi zaten her kareyi değerlendiriyor); R19'da (ayrıntılı sayaç yok) hızlı bakış bir şey bulmazsa tam tarama sırasını bekler: büyük taramalar (150 ms üstü) maliyetin 19 katı, diğerleri 9 katı bekler. Log'a 30 sn'de bir `Pump stats` yazılır (yalnız pompa %10'dan fazla meşgulse ya da 10 dakikada bir).
-- **Log:** `c4d_collab.log` 5 MB'ta döner (+2 eski dosya); Python 3'te UTF-8, Python 2'de (R19) baytlar olduğu gibi yazılır.
-
-### Yüz: Pose Morph (Aşama 8)
-
-Ölçümler: `tests/c4d_manual/probe_posemorph.py` (2023, c4dpy ile otomatik; R19 bekleniyor). Kod: `serializers/morph.py`.
-
-- **Veri (tag bölümü `"pm"`):** `{"n": sahibin nokta sayısı, "m": [{"n": ad, "d": {parça: float x3}}...], "s": [güç | null]}`. Morph'lar tag'deki sırayla; 0 = base poz, nokta taşımaz. `"d"` base'e göre **göreli** farklar, 128 noktalık parçalar; tamamı sıfır olan parçalar gönderilmez (bir gülümseme binlerce noktanın birkaç yüzünü oynatır). Güç `null` = track ile sürülüyor, alıcı kendi değerini korur. Yalnızca nokta morph'ları taşınır; konum/dönüş/ölçek, UV, parametre, harita ve hiyerarşi morph'ları yerel kalır.
-- **Okuma/yazma:** morph `SetMode(EXPAND, REL)` ile açılır, `GetFirst().GetPoint/SetPoint`, sonra `SetMode(COLLAPSE, AUTO)`. Kapalı (collapsed) morph anlamsız tek nokta döndürür. Güç slider'ları `GetMorphID(i)` = DescID `(4000, 1001 + 100·i)`; tag açıklamasında **yok**, genel parametre serileştiricisi görmez.
-- **Ölçülen sayaç davranışı:** morph noktası düzenleme, yeniden adlandırma, morph ekleme ve aktif poz değiştirme **hiçbir sayacı oynatmıyor**; güç değişikliği tag `DATA`, `RemoveMorph` tag `DATA`. Bu yüzden periyodik kontrol var. Ama okuma pahalı (10.000 noktalı morph ~3 ms, yazma ~17 ms; gerçek rigde 51 tag), bu yüzden noktalar yalnızca tag'in **imzası** (mod, aktif poz, morph adları, nokta sayısı) değişince yeniden okunur; yoksa son okuma kullanılır (`Tracker.morph_cache`, her oturumun kendi önbelleği). Kullanıcı yüzü düzenleme modunda şekillendirip başka poza ya da animasyon moduna geçince imza değişir ve şekil gider. Pose morph kontrolü pahalı diye periyodik kontrolden düşürülmez (tek kanal o).
-- **Tag sonucu mesh'in kendi noktalarına yazıyor (ölçüldü, deform cache yok):** animasyon modunda mesh = base + güç × fark; düzenleme modunda seçili poz mesh'te görünür. Eskiden her slider hareketi (XPresso her değerlendirmede) yüzün deforme hâlini **geometri olarak** gönderiyordu. Şimdi: mesh'in noktaları yalnızca düzenleme modunda base poz seçiliyken base kabul edilir (`morph.mesh_shows_base`). Diğer durumlarda paylaşılan geometri korunur, noktalar okunmaz bile; paylaşılan bir şey yoksa (yeni nesne, sayılar değişti) base, base pozdan mutlak modda okunur (`morph.base_points`).
-- **Alıcı:** geometri gelince Pose Morph'lu mesh'e noktaların **tamamı** yazılır (diğer parçalar animasyonlu yüzü gösteriyor olabilir), sonra base poz yeniden `Store` edilir (`morph.store_base`, ölçüldü: tag yeni base'i kullanır). Morph listesi farklıysa tag baştan kurulur ve tüm parçalar yazılır (yeni morph `Store` anında mesh'te ne varsa onu alır); aynıysa yalnızca değişen parçalar yazılır. Alıcı tag'i hep animasyon modunda tutar.
-- **Yerel kalan:** düzenleme/animasyon modu (`ID_CA_POSE_MODE`) her kullanıcının kendi görünümü, gönderilmez.
-- **Kilit:** kilitli yüzde yalnızca güçler değiştiyse (rig değerlendirmesi) geri alınmaz; şekil veya ad değiştiyse geri alınır.
-- **Nokta sayısı uyuşmazsa** noktalar yazılmaz, günlüğe uyarı düşer; gönderilen hâl hatırlanır, böylece alıcı kendi (yazılmamış) hâlini düzenleme diye geri göndermez.
-- **Gerçek C4D senaryosu (2023↔2023):** şekiller, güç, animasyon modu, misafirde deformasyon, slider hareketinde geometri gitmemesi, paylaşılan mesh'in base olması ve değerlendirme sırasında yankı olmaması kontrol edilir.
-
-### Malzemeler, shader'lar ve doku dosyaları (canlı geri bildirim: R19'da doku görünüyor, 2023'te gri)
-
-- **Yeni düğüm türleri:** `material` (belge düzeyi, kardeş zinciri), `shader` (ebeveyn: malzeme ya da shader; iç içe shader'lar), `asset` (doku dosyası). `KIND_ORDER` = asset, material, shader, object, tag, track, doc: anlık görüntüde (BFS) önce dosyalar ve malzemeler gelir, çünkü doku etiketleri malzemeye bağlanır.
-- **Veri:** nesne ve etiketlerle aynı genel parametre serileştiricisi (`params.dump`, açıklamaya göre). Bu yüzden Corona gibi eklenti malzemeleri de, o eklenti karşıda kuruluysa, taşınır; olmayan tür atlanır (malzeme için standart malzeme yer tutucu, doku etiketi bağlantısı bozulmasın diye).
-- **Bağlantılar:** `MATERIAL_COLOR_SHADER` gibi shader bağlantıları malzeme oluşturulduğunda henüz yok olan shader'ı gösterir; `Applier._relink` bir toplu işlemde yeni shader alan malzemelerin bağlantı parametrelerini yeniden yazar. Tarama her turda önce tüm malzeme ve shader'lara kimlik verir (`_assign_shading_uids`), sonra nesneleri gezer; böylece doku etiketinin malzemeye bağlantısı ilk taramada çözülür.
-- **Değişiklik algılama:** malzeme ve shader için ayrı ayrı `GetDirty`; belge sayacı olarak `HDIRTYFLAGS_MATERIAL` ve (varsa) `HDIRTYFLAGS_SHADER` (ölçüldü: shader düzenlemesi MATERIAL sayacını değil SHADER sayacını artırır; R19'da ALL).
-- **Ölçülenler (2023):** shader çocukları yalnızca `GetFirstShader()/GetNext()` ile gezilir (`GetUp/GetDown` shader'larda boş döner); `c4d.Filename` yok, dosya adı düz metin. Malzemeyi yerel `.c4d` olarak dışa aktarmak (320 ms) ve yerel dosya yüklemek denendi ve reddedildi: yavaş ve karşı tarafta dosya ayrıştırmak güvenlik riski.
-- **Doku dosyaları (`serializers/assets.py`):** göreli yol belgenin yanında, `tex` klasöründe ve genel doku klasörlerinde aranıp mutlak yola çevrilir. Dosya varsa (≤ 25 MB, yalnızca görüntü uzantıları) SHA-1'i bir `asset` düğümü olur (uuid = SHA-1, bir dosya bir kez gider; oturumda toplam 300 MB sınırı). Malzeme verisinde `"f": {parametre: {h: sha1, n: ad}}`. Alıcıda dosya kendi yolunda varsa o kullanılır, yoksa önbellek klasöründeki kopyaya yönlendirilir; yönlendirme yerel kalır (izleyici özgün yolu bildirir, yankı yok). Kabul kuralları: yalnızca resim uzantıları, dosya adı temizlenir ve önbellek klasöründen çıkamaz, açılmış boyut sınırlı, içerik SHA-1 ile eşleşmeli.
-- **Yansıma (Reflectance) katmanları (`serializers/layers.py`, canlı geri bildirim: "doku soyutlaşıyor, ışık yansıyor"):** yeni açılan standart malzeme kendiliğinden **1 varsayılan yansıma katmanıyla** doğar; katmansız bir malzeme (sahnedeki 119 malzemenin 59'u böyleydi) karşıda fazladan bir specular parlaması kazanıyordu. Artık malzeme verisinde `"rl": [[bayraklar, ad], ...]` (katman sırasıyla, boş liste = katmansız) taşınır; alıcıda önce katman sayısı/bayrak/ad eşitlenir (`layers.sync`: fazlalar silinir, eksikler eklenir), sonra parametreler yazılır. Katman parametreleri katman kimliği + sapma olarak durur ve kimlikler her Cinema 4D'de farklıdır (526336, 526848, ...; silinen katmanlar boşluk bırakır): bu yüzden anahtarlar **katman sırasına** çevrilerek taşınır (`LAYER_BASE + 512 × sıra`, `to_canonical`/`to_local`), böylece yankı da oluşmaz. API R17.032+ (yoksa `layers.supported` yanlış döner, eski davranış). Gerçek Cinema 4D kontrolü: `c4dpy tests/c4d_real/layers_check.py`.
-- **Mesaj boyutu:** `protocol.chunk_ops` toplu işlemleri ve anlık görüntü parçalarını sayı ve tahmini bayta (8 MB) göre böler; büyük bir dosya tek başına gider.
-- **Bilinen sınırlar:** Layer shader'ın iç katman listesi, düğüm tabanlı (node) malzemeler ve ses/video dosyaları taşınmaz; kod taşıyan shader'lar (Python) yerel kalır.
-
-### Seçim şekli ve hareket akıcılığı (Aşama 7, canlı geri bildirim)
-
-- **Seçilen nesnenin kendi şekli:** Kutu yerine nesnenin gerçek kenarları kullanıcının renginde çizilir (piramit piramit gibi). `presence.object_outline`: nesnenin (deform) önbelleğindeki çokgen nesneleri toplar, benzersiz kenarları çıkarır, noktaları yerel uzayda saklar ve her çizimde yalnızca matrisle dünya uzayına çevirir. Mesh yalnızca nesnenin `GetDirty(DATA|CACHE)` değeri değişince yeniden okunur. Boş nesne, spline ve büyük mesh (6000 çokgen / 9000 kenar üstü) için kutuya düşer. İsim etiketi yine nesnenin tepesinde. Aynı renkte çizgiler tek `SetPen` ile çizilir.
-- **Nesne hareketi:** Eski kayma her güncelleme için smoothstep kullanıyordu; hız her güncellemede sıfıra düşüyor ve bu kasma gibi görünüyordu. Şimdi nesne bir güncelleme aralığı kadar geriden gösterilir ve her alınan pozdan bir sonrakine **doğrusal** hareket eder (`tween.TransformTweens`, bölüt kuyruğu): hız güncellemeler arasında sabit kalır. Geç/erken gelen güncellemeler kuyruğa eklenir, 0,25 sn'den fazla birikirse kuyruk atılır.
-
-### Gerçek C4D'nin bulduğu hata (Aşama 7)
-Kayıtlı olmayan bir nesne/tag tipi oluşturulmak istenince C4D normal bir hata değil **çıplak `BaseException`** fırlatır; `except Exception` bunu yakalamaz. Ağdan gelen bilinmeyen bir tip (kurulu olmayan plugin, daha yeni C4D) bütün senkronizasyon turunu bozabilirdi. Çözüm: `compat.allocate()` ve sınır noktalarında `BaseException` yakalama (`KeyboardInterrupt`/`SystemExit` hariç, `core.compat.is_fatal`). Gerçek C4D senaryosuna bilinmeyen tip adımı eklendi.
-
-## 7f. MCP sayfası: yapay zekâ asistanı canlı Cinema 4D'yi kullanabilir (Aşama 8, geliştirme aracı)
-
-Maxon'un kendi MCP sunucusu yalnızca 2026.4+ içinde var; 2023 ve R19'da yok. Biz aynı işi **Edit → Preferences → MCP** sayfası + yerel bir sunucu ile R19'dan itibaren sağlıyoruz. Sayfa, Maxon'un 2026'daki sayfasının düzenini izler (SDK'daki `mcpadapterprefs.res` tanımı ve ekran görüntüleri incelendi): **Server, Clients, Security, Toolset** bölümleri, düğmeler, istemci açılır listesi, açarken onay sorusu. Amaç Collab'ın kendisi değil, geliştirme: Claude Code gibi bir uygulama probe, test ve sahne okumayı elle beklemeden canlı C4D'de yapabilsin. Collab'ın (ağ üzerinden) oturumuyla ilgisi yoktur ve onun güvenlik kurallarını (kod taşıyan tipler senkronize edilmez) değiştirmez.
+Maxon's own MCP server only exists in 2026.4+, not in 2023 or R19. We offer the same with an **Edit → Preferences → MCP** page and a local server from R19 onward. The page follows the layout of Maxon's 2026 page: **Server, Clients, Security, Toolset** sections, buttons, a client drop-down and a confirmation question when switching on. The goal is development, not Collab itself: an app such as Claude Code can run probes, tests and scene reads in a live C4D without waiting for a person. It has nothing to do with Collab's network sessions and does not change their security rules.
 
 ```
-AI uygulaması ──stdio──► mcp_stdio_bridge.py ──127.0.0.1──► core/rpc.RpcServer (soket thread'i, sadece kuyruğa yazar)
-(Claude Desktop/Code,    (sistem Python'u)                          │ notify → SpecialEventAdd(MCP_MESSAGE)
- Codex, Cursor...)                                                  ▼
-                              McpMessageData (ana thread, 50 ms timer) ► mcp_service.execute ► mcp_tools.*
+AI app ──stdio──► mcp_stdio_bridge.py ──127.0.0.1──► core/rpc.RpcServer (socket thread, only writes to a queue)
+(Claude Desktop/Code,  (system Python)                      │ notify → SpecialEventAdd(MCP_MESSAGE)
+ Codex, Cursor...)                                          ▼
+                              McpMessageData (main thread, 50 ms timer) ► mcp_service.execute ► mcp_tools.*
 ```
 
-### Sayfa (`c4d_adapter/mcp_prefs.py`, `res/description/mcpprefs.*`)
-`PreferenceData` (R19+; daha eski sürümde sayfa atlanır, Collab yüklenir). Değerler world container'da (`MCP_CONTAINER`).
+### Page (`c4d_adapter/mcp_prefs.py`, `res/description/mcpprefs.*`)
+A `PreferenceData` page (R19+; on older versions the page is skipped and Collab still loads). Values live in the world container (`MCP_CONTAINER`).
 
-| Bölüm | Alan | Not |
+| Section | Field | Note |
 |---|---|---|
-| **Server** | Allow MCP Server | Varsayılan **kapalı**. Açarken onay sorusu (okunabilecekler, Python uyarısı, sağlayıcının veri politikası); Hayır = kapalı kalır. Program açılırken kendiliğinden döner, soru sorulmaz |
-| | Status, Host (127.0.0.1) | Bilgi alanları (soluk) |
-| | Port (1024-65535, 47921) | Değişince sunucu yeni porta geçer |
-| | Auth Token + Show Token | Alan maskeli (`****…` + son 4 karakter); Show Token açıkken tam. Yazılan atılır |
-| | Copy Token, Regenerate Token | Düğme. Yeni token yapılandırma dosyasına yazılır: AI tarafında bir şey değişmez |
-| | Request Timeout (s) | 30 s, en az 0,1. **Gerçek anlamı:** komut ana thread'i bu kadar bekletirse (C4D render/uzun betik) **çalıştırılmaz**, "timed out" döner; geç kalmış bir komut sonradan çalışmaz |
+| **Server** | Allow MCP Server | **Off** by default. Switching on asks for confirmation (what can be read, the Python warning, the provider's data policy); No = stays off. It comes back by itself when the program starts, without asking |
+| | Status, Host (127.0.0.1) | Information fields (greyed) |
+| | Port (1024-65535, 47921) | The server moves to the new port when it changes |
+| | Auth Token + Show Token | The field is masked (`****…` + last 4 characters); full when Show Token is on. Typed text is discarded |
+| | Copy Token, Regenerate Token | Buttons. A new token is written to the config file, so nothing changes on the AI side |
+| | Request Timeout (s) | 30 s, at least 0.1. If a command would keep the main thread waiting this long (C4D rendering/a long script) it is **not run** and "timed out" is returned; a late command never runs afterwards |
 | **Clients** | MCP Client | Claude Desktop, Claude Code, Codex, Cursor, Other |
-| | Client Status, Config File | "Set up" / "Not set up" / "Not installed" / "Set up by hand" (2 sn önbellek: dosyalar büyük olabilir) |
-| | Update Selected Client | Onaylı; yedek alır; yalnızca `cinema4d` girdisini ekler/değiştirir. Claude Code: komutu panoya koyar (terminalden kurulur); Other: Copy Config'e yönlendirir |
-| | Remove from Client, Copy Config | Aynı kurallar; Copy Config her istemci için kendi biçimini kopyalar (JSON `mcpServers`, Codex TOML bloğu, `claude mcp add` satırı) |
-| **Security** | Allow Python Execution (run_script) | Varsayılan **kapalı**, her çağrıda yeniden okunur |
-| | Log Incoming Calls | Varsayılan açık (denetim günlüğü) |
-| | Show Rejected Calls in Console | Reddedilen çağrıları Python konsoluna yazar |
-| **Toolset** | Basics, Hierarchy, Entities, System | Kapatılan grubun araçları AI'a listelenmez (istemci yeniden başlayınca) ve çağrılırsa **hemen** reddedilir |
+| | Client Status, Config File | "Set up" / "Not set up" / "Not installed" / "Set up by hand" (cached for 2 s) |
+| | Update Selected Client | Asks for confirmation, makes a backup, only adds or changes the `cinema4d` entry. Claude Code: puts the command on the clipboard (it is set up from a terminal); Other: points to Copy Config |
+| | Remove from Client, Copy Config | The same rules; Copy Config copies each client's own format (JSON `mcpServers`, a Codex TOML block, a `claude mcp add` line) |
+| **Security** | Allow Python Execution (run_script) | **Off** by default, read again on every call |
+| | Log Incoming Calls | On by default (audit log) |
+| | Show Rejected Calls in Console | Writes rejected calls to the Python console |
+| **Toolset** | Basics, Hierarchy, Entities, System | The tools of a switched-off group are not listed to the AI (after the client restarts) and are rejected **immediately** if called |
 
-Maxon'un sayfasından **bilerek alınmayanlar:** *Allow Remote Connections / Allowed IPs / Browser Client Origins* (uzak bağlantı şifresiz olurdu ve ihtiyaç yok), *Allow Python-Bearing Operations* (Python taşıyan nesne oluşturan aracımız yok).
+Not taken from Maxon's page on purpose: *Allow Remote Connections / Allowed IPs / Browser Client Origins* (a remote connection would be unauthenticated and is not needed) and *Allow Python-Bearing Operations* (we have no tool that creates objects carrying Python).
 
-**Düğme ve açılır liste Preferences sayfasında çalışır:** ilk sürümde "Preferences sayfalarında düğme olmaz" demiştik; SDK iskeletinin sınırıydı, API'nin değil. Düğmeler `Message` içinde `MSG_DESCRIPTION_COMMAND` ile (`data["id"][0].id`) yakalanır (`PreferenceData`, `NodeData`'dan türer), açılır liste `CYCLE`. Gerçek 2023 kaynak ayrıştırıcısı `res_check.py` ile doğrulandı. **Doğrulanamayan:** düğme tıklamasının gerçekten `Message`'a ulaşması (c4dpy'de pencere yok), `CHECKLIST.md` 10. bölüm.
+Buttons and drop-downs work on a Preferences page: buttons are caught in `Message` as `MSG_DESCRIPTION_COMMAND`, and the drop-down is a `CYCLE`. Value ids 1000-1002 and 1005 keep their meaning from the first version; everything new starts at 1100.
 
-**Değer kimlikleri:** 1000-1002 ve 1005 ilk sürümdeki kayıtlı değerler olarak anlamlarını korur (kullanıcı tercihlerinde saklanıyor olabilir); yeni her şey 1100'den; 1003, 1004, 1006 hiç saklanmadı ve kullanılmaz.
+### Client setup (`core/mcp_clients.py`)
+- **Finding Python:** AI apps start from the desktop and may not see the shell's PATH, so the **absolute path** of a real install is written: PATH (except the Microsoft Store `WindowsApps` shortcut, which opens the Store) → known install locations → `py -3` → `python3`.
+- **Files:** Claude Desktop 4.x keeps its data in `%LOCALAPPDATA%\Claude-Data\claude_<id>\claude_desktop_config.json` and does not read the old locations. Older versions use the Microsoft Store package folder or `%APPDATA%\Claude\claude_desktop_config.json`; Cursor `~/.cursor/mcp.json`; Codex `~/.codex/config.toml` (`CODEX_HOME` applies); Claude Code `~/.claude.json` (only read for status, never written).
+- **Safety rules:** a `.bak-<time>` backup before any change; a temporary file + replace; **a file that cannot be parsed is never written**; only the `cinema4d` entry is added, changed or deleted and the rest stays as it is; in Codex a marked block (`# >>> C4D Collab MCP ... <<<`) is used and a hand-written `[mcp_servers.cinema4d]` entry is left alone; if the app is not installed nothing is created.
+- **Clipboard:** `core/clipboard.py` (ctypes with Unicode on Windows; Cinema 4D's Python can read the clipboard but not write it).
 
-### İstemci kurulumu (`core/mcp_clients.py`)
-- **Python bulma:** AI uygulamaları masaüstünden başlar ve kabuğun PATH'ini görmeyebilir; bu yüzden gerçek bir kurulumun **mutlak yolu** yazılır: PATH'te (Microsoft Store'un `WindowsApps` kısayolu **hariç**: açılırsa Store'a götürür; bu makinede `python`/`python3` böyle) → bilinen kurulum yerleri (`%LOCALAPPDATA%\Python\pythoncore-*`, `Programs\Python\Python3*`, en yeni sürüm) → `py -3` → `python3`.
-- **Dosyalar:** Claude Desktop **4.x** her verisini (ayarlar, oturum, bu yapılandırma) `%LOCALAPPDATA%\Claude-Data\claude_<id>\claude_desktop_config.json` içinde tutar ve **eski konumları okumaz** (canlı denemede bulundu: Store paketinin Roaming klasörüne yazılan girdi hiç yüklenmedi ve bağdaştırıcılar listesinde görünmedi; bu yüzden artık ilk aday bu dosyadır). Eski sürümler: **Microsoft Store paketi** (`%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude\`, `%APPDATA%\Claude`'u görmez) ya da `%APPDATA%\Claude\claude_desktop_config.json`; Cursor `~/.cursor/mcp.json`; Codex `~/.codex/config.toml` (`CODEX_HOME` geçerli); Claude Code `~/.claude.json` (yalnızca durum için okunur, yazılmaz).
-- **Güvenlik kuralları:** değişiklikten önce `.bak-<zaman>` yedeği; geçici dosya + yer değiştirme; **ayrıştırılamayan dosyaya hiç yazılmaz**; yalnızca `cinema4d` girdisi eklenir/değişir/silinir, gerisi aynen kalır; Codex'te işaretli blok (`# >>> C4D Collab MCP ... <<<`), elle yazılmış `[mcp_servers.cinema4d]` girdisine dokunulmaz; uygulama kurulu değilse (yapılandırma klasörü yok) hiçbir şey oluşturulmaz.
-- **Pano:** `core/clipboard.py` (Windows'ta ctypes ile Unicode; Cinema 4D Python'u panoyu okuyabilir ama yazamaz). c4dpy'de `GetStringFromClipboard` hep `None` döner (arayüzsüz), testler panoyu PowerShell ile okur.
+### Server and security
+- Off by default; it binds to `127.0.0.1` only and accepts local connections only; a random 128-bit token, HMAC-SHA256 on the wire (the token is never sent); 4 KB / 5 s before login, a 60 s lock after 5 wrong logins, at most 4 clients and 8 pending commands at a time, a 4 MB result limit; the socket thread never runs a command (fixed rule 4); JSON only; every command is written to `c4d_collab_mcp_audit.log` (the token is never written); when off, the config file (which contains the token) is deleted. `run_script` needs a separate permission; while it runs C4D does not respond (this cannot be limited), and `sys.exit()` ends the script, not Cinema 4D.
+- **Config file** (`c4d_collab_mcp.json`, while on): port, token, `timeout`, `enabled_tools`, the bridge's path and the entry written to the AI app. The bridge reads it on every call and filters the tool list by `enabled_tools`.
+- **Tools:** `ping`, `get_info`, `get_hierarchy`, `get_object`, `get_log`, `run_script`.
+## 7g. Version compatibility: R17 to 2026 (Stage 8)
 
-### Sunucu ve güvenlik
-- Varsayılan kapalı; yalnızca `127.0.0.1`'e bağlanır ve yalnızca yerel bağlantı kabul eder; rastgele 128 bitlik token, ağda HMAC-SHA256 (token gitmez), giriş öncesi 4 KB / 5 sn, 5 yanlış girişte 60 sn kilit, aynı anda en çok 4 istemci ve 8 bekleyen komut, sonuç 4 MB sınırı; soket thread'i hiçbir komut çalıştırmaz (değişmez kural 4); yalnızca JSON; her komut `c4d_collab_mcp_audit.log` dosyasına yazılır (token yazılmaz, testle doğrulandı); kapalıyken yapılandırma dosyası (token içerir) silinir. `run_script` ayrı bir izne bağlıdır; çalışırken C4D yanıt vermez (sınırlanamaz) ve `sys.exit()` betiği bitirir, Cinema 4D'yi değil.
-- **Yapılandırma dosyası** (`c4d_collab_mcp.json`, açıkken): port, token, `timeout`, `enabled_tools`, köprünün yolu ve AI uygulamasına yazılan girdi. Köprü bunu her çağrıda okur; araç listesini `enabled_tools`'a göre süzer (Cinema 4D kapalıyken hepsini listeler).
-- **Araçlar:** `ping`, `get_info`, `get_hierarchy`, `get_object`, `get_log`, `run_script`.
+The targets are R17, R18, R19, R20, R21, R22, R23, 2023, 2024, 2025 and 2026. Only **R19** and **2023** (and 2024, waiting for a licence login) are available as real copies. For the others we cannot prove that the code **runs**, only that **the API it uses exists in that version and the fallbacks are tested**. The two are kept apart:
 
-### Testler
-`tests/core/test_rpc.py` (taşıma, kimlik doğrulama, kilitleme, sınırlar, zaman aşımı, köprü alt süreci ve araç süzme), `tests/core/test_mcp_clients.py` (istemci dosyaları, yedek, bozuk dosya, Codex bloğu, Python bulma, pano), `tests/adapter/test_mcp.py` (sayfa, kayıt, onay, düğmeler, gölgeleme, token maskeleme, araç grupları, zaman aşımı, python izni, denetim günlüğü), `tests/c4d_real/mcp_check.py` (gerçek 2023 API'si: world container, sayfa nesnesi, **gerçek pano**, istemci yazma, sunucu, her araç), `tests/c4d_real/res_check.py` (**gerçek 2023 kaynak ayrıştırıcısı** `.res/.h/.str` dosyalarını okur: 4 grup, 28 parametre, veri tipleri, adlar, açılır liste girdileri). Testlerin bulduğu hatalar: Türkçe Windows + Python 2.7'de işletim sistemi hata metni `str()` içinde `UnicodeDecodeError` veriyordu (köprü `error_text` kullanıyor); script içindeki `sys.exit()` ana thread'e kadar yükseliyordu (artık betiği bitiriyor); bu makinede `python` Store kısayolu çıktı (bulucu atlıyor).
-- **Doğrulanamayan (GUI gerektirir):** sayfanın Preferences listesindeki yeri (`PAGE_PARENT`/`PAGE_SORT`, `mcp_prefs.py`), düğmelerin `Message`'a ulaşması, R19'daki `PreferenceData` imzaları. `tests/c4d_manual/CHECKLIST.md` 10. bölüm.
-
-## 7g. Sürüm uyumluluğu: R17'den 2026'ya (Aşama 8)
-
-Hedef R17, R18, R19, R20, R21, R22, R23, 2023, 2024, 2025, 2026. Elimizde gerçek olarak yalnızca **R19** ve **2023** (ve lisans girişi bekleyen 2024) var. Diğerlerinde kodun **çalıştığını** değil, **kullandığı API'nin o sürümde var olduğunu ve yedek yolların test edildiğini** kanıtlayabiliriz. İkisi ayrı tutulur:
-
-| Sürüm | Python | Durum |
+| Version | Python | Status |
 |---|---|---|
-| **R19** | 2.7 | **Gerçek testle doğrulandı** (iki süreçli senaryo, elle denetim listesi) |
-| **2023** | 3.9 | **Gerçek testle doğrulandı** (c4dpy senaryoları, MCP sayfası canlı) |
-| R17, R18 | 2.7 | API uyumu belgeden doğrulandı + sahte sürüm profili testi; **gerçek denenmedi** |
-| R20, R21, R22 | 2.7 | profil testi (R20, R21 profilleri; R22 = R21); **gerçek denenmedi** |
-| R23 | 3.7 | profil testi + Python 3.7 statik denetim; **gerçek denenmedi** |
-| 2024 (3.11) | 3.11 | **gerçek denenmedi** (makinede kurulu, `c4dpy` ilk kullanımda lisans girişi ister) |
-| 2025, 2026 | 3.11+ | R23 profiliyle aynı API yüzeyi (2026 SDK örnekleri ve 2023 belgeleri); **gerçek denenmedi** |
+| **R19** | 2.7 | **Verified with real tests** (two-process scenario, manual checklist) |
+| **2023** | 3.9 | **Verified with real tests** (c4dpy scenarios, MCP page live) |
+| R17, R18 | 2.7 | API compatibility checked against the documentation + fake version profile tests; **not tried in a real copy** |
+| R20, R21, R22 | 2.7 | profile tests (R20 and R21 profiles; R22 = R21); **not tried in a real copy** |
+| R23 | 3.7 | profile tests + Python 3.7 static audit; **not tried in a real copy** |
+| 2024 | 3.11 | **not tried in a real copy** (installed, but `c4dpy` asks for a licence login on first use) |
+| 2025, 2026 | 3.11+ | same API surface as the R23 profile (2026 SDK examples and 2023 docs); **not tried in a real copy** |
 
-### Neyi, nasıl doğruluyoruz (dört katman)
-1. **API envanteri** (`tests/compat/api_inventory.py`): eklentinin kullandığı her Cinema 4D adı (AST taraması: 60 modül düzeyi sembol, 174 nesne yöntemi, 95 korumalı ad). 2023'te hepsi gerçek `c4dpy` ile kontrol edildi (tek eksik `c4d.storage.ByteSeq`, R19'a özgü ve korumalı); R19'da bağlama kitaplığında hepsinin adı geçiyor.
-2. **Sürüm bilgisi** (`tests/compat/api_matrix.py`): her ad için "hangi sürümden beri var". Kaynak Maxon'un Python API belgeleri (2023.2 sınıf sayfalarındaki "New in version ..." notları: belge yalnızca kendi taban sürümünden yeni olanı işaretler, notu olmayan R16 ya da daha eski demektir), 2026 SDK örnekleri ve R19/2023'te ölçülenler. `test_api_matrix.py` **yeni bir API adı sınıflandırılmadan testin geçmesine izin vermez** ve R17'den yeni her adın yanında koruma olduğunu denetler.
-3. **Sürüm profilleri** (`tests/adapter/profiles.py`, `test_profiles.py`): sahte `c4d` modülü R17, R18, R19, R20, R21, R23 gibi davranır (olmayan yöntemler gerçekten `AttributeError` verir, bayrak adları değişir); her profilde 9 test sınıfı (senkronizasyon, düzenleme, rig, seçim, mesh, animasyon, kilit, Pose Morph, malzeme) ve eklentinin yüklenmesi çalışır. Python 2.7 ve 3.x'te.
-4. **Python denetimi** (`tests/compat/python_audit.py`): kaynağı (çalıştırmadan) 2.7 ve 3.7'nin okuyamayacağı sözdizimi (f-string, `:=`, anotasyon, `async`, `nonlocal`, `yield from`, yalnızca-anahtar-kelime parametre...), korumasız yeni standart kütüphane adları (`time.monotonic`, `shutil.which`, `subprocess.run`, `pathlib`...), eksik `__future__` satırı ve `coding` satırı için tarar. Kendi kendini sınar (`test_python_audit.py`: kötü örnekleri yakaladığı gösterilir).
+### How we verify (four layers)
+1. **API inventory** (`tests/compat/api_inventory.py`): every Cinema 4D name the plugin uses (AST scan: 60 module-level symbols, 174 object methods, 95 guarded names). On 2023 all of them were checked with a real `c4dpy` (the only one missing is `c4d.storage.ByteSeq`, which is R19-specific and guarded); on R19 all of them appear in the binding library.
+2. **Version knowledge** (`tests/compat/api_matrix.py`): for each name, "since which version it exists". The source is Maxon's Python API docs ("New in version ..." notes on the 2023.2 class pages: the docs only mark what is newer than their own base version, so no note means R16 or older), the 2026 SDK examples and what was measured on R19/2023. `test_api_matrix.py` **does not let the tests pass while a new API name is unclassified**, and checks that every name newer than R17 has a guard next to it.
+3. **Version profiles** (`tests/adapter/profiles.py`, `test_profiles.py`): a fake `c4d` module behaves like R17, R18, R19, R20, R21 or R23 (missing methods really raise `AttributeError`, flag names change); in every profile 9 test classes (sync, editing, rig, selection, mesh, animation, locks, Pose Morph, materials) and the plugin load run. On Python 2.7 and 3.x.
+4. **Python audit** (`tests/compat/python_audit.py`): scans the source without running it for syntax that 2.7 and 3.7 cannot read (f-strings, `:=`, annotations, `async`, `nonlocal`, `yield from`, keyword-only parameters...), unguarded new standard library names (`time.monotonic`, `shutil.which`, `subprocess.run`, `pathlib`...), and missing `__future__` and `coding` lines. It tests itself (`test_python_audit.py` shows it catches bad examples).
 
-Python yorumlayıcıları: 2.7.9 (R19'un kendi yorumlayıcısı), 3.9.1 (2023'ün kendi yorumlayıcısı, bağımsız çalışır), 3.14 (makinenin). 3.7 ve 3.11 yok; 3.7 için yukarıdaki statik denetim.
+Python interpreters used: 2.7.9 (R19's own), 3.9.1 (2023's own, runs standalone), 3.14 (the machine's). 3.7 and 3.11 are not available; the static audit above covers 3.7.
 
-### Belgeden çıkan gerçek boşluklar ve yedek yolları
-| API | Ne zaman geldi | Eksik sürümlerde ne olur | Yer |
+### Real gaps found in the docs, and their fallbacks
+| API | Since | What happens in versions without it | Where |
 |---|---|---|---|
-| `BaseDocument.GetHDirty` | R19 | R17/R18'de belge sayaçları yok: anlık görüntü her çağrıda değişir, sahne **her tick taranır** (tick'in kendi dinlenmesi ana thread'i ~üçte biriyle sınırlar). Çökme yerine yavaş ama doğru | `compat.doc_dirty`, `HAS_HDIRTY` |
-| `BaseSelect.GetRange` | R19 | Seçim, bayraklardan (`GetAll`) okunur; aynı aralıklar çıkar | `geometry.dump_selection` |
-| `BaseDraw.DrawHUDText` | R18.020 | R17'de seçilen nesnenin isim etiketi çizilmez, renkli çerçeve çizilir | `presence.draw_overlay` |
-| `CAWeightTag.SetWeightMap` | R21 | R17-R20'de cilt ağırlıkları nokta nokta (`SetWeight`) yazılır: büyük mesh'te yavaş, sonuç aynı | `rig.load_weights` |
-| `RegisterPreferencePlugin`, `PreferenceData` | R19 | R17/R18'de MCP sayfası yok (ve boşuna zamanlayıcı da kayıt edilmez); Collab etkilenmez | `mcp_prefs.available`, `c4d_collab.pyp` |
-| `AddUniqueID`/`FindUniqueID` | R16.021 | R17'de var (belge); `ByteSeq` gerekirse yalnızca TypeError'da denenir | `compat.write_uid` |
+| `BaseDocument.GetHDirty` | R19 | R17/R18 have no document counters: the snapshot changes on every call, so the scene is **scanned every tick** (the tick's own rest limits the main thread to about a third). Slow but correct, no crash | `compat.doc_dirty`, `HAS_HDIRTY` |
+| `BaseSelect.GetRange` | R19 | The selection is read from the flags (`GetAll`); the same ranges come out | `geometry.dump_selection` |
+| `BaseDraw.DrawHUDText` | R18.020 | On R17 the name label of a selected object is not drawn, the coloured frame is | `presence.draw_overlay` |
+| `CAWeightTag.SetWeightMap` | R21 | On R17-R20 skin weights are written point by point (`SetWeight`): slow on big meshes, same result | `rig.load_weights` |
+| `RegisterPreferencePlugin`, `PreferenceData` | R19 | R17/R18 have no MCP page (and no needless timer is registered); Collab is not affected | `mcp_prefs.available`, `c4d_collab.pyp` |
+| `AddUniqueID`/`FindUniqueID` | R16.021 | Present on R17 (document); `ByteSeq` is only tried on a TypeError | `compat.write_uid` |
 
-Ayrıca: R17/R18/R19'da `DESCFLAGS_*_NONE` adları yok (`_0` kullanılır), ayrıntılı `HDIRTYFLAGS_*` R19'da yok (ölçüldü): ikisi de zaten `compat`'ta. Başlangıçta günlüğe `Capabilities: ...` satırı yazılır (hangi yedek yolların kullanıldığı); her sürümden gelen bir rapor önce buraya bakılarak okunur.
+Also: R17/R18/R19 have no `DESCFLAGS_*_NONE` names (`_0` is used) and R19 has no detailed `HDIRTYFLAGS_*` (measured); both are already handled in `compat`. At start-up a `Capabilities: ...` line is written to the log (which fallbacks are in use); a report from any version is read by looking at it first.
 
-### Kanıtlanamayanlar (gerçek sürüm gerekir)
-- **Davranış:** hangi düzenlemenin hangi sayacı oynattığı (R17-R22, 2024+), çizim sırası, `GetDeformCache` gibi sürüme özgü ayrıntılar. Gerçek sürümü açabilen biri `tests/c4d_manual/spike_probe.py` ve `CHECKLIST.md`'yi çalıştırıp sonucu iletmeli.
-- **Python 2.7 dizgi kuralı** (`str`/`unicode`): R17-R22'de sahte modül zorluyor, gerçek sürümlerde yalnızca R19'da ölçüldü.
-- **2024-2026:** belge ve SDK örnekleri API yüzeyinin değişmediğini gösteriyor, ama 2025/2026'da yeni kaldırılan bir şey olursa yalnızca gerçek çalıştırma yakalar. 2024 için `c4dpy`'yi bir kez etkinleştirmek yeterli.
+### What cannot be proven (a real version is needed)
+- **Behaviour:** which edit moves which counter (R17-R22, 2024+), drawing order, version-specific details such as `GetDeformCache`. Someone who can open a real version should run `tests/c4d_manual/spike_probe.py` and `CHECKLIST.md` and send the result.
+- **The Python 2.7 string rule** (`str`/`unicode`): enforced by the fake module on R17-R22, measured on real R19 only.
+- **2024-2026:** the docs and SDK examples show the API surface has not changed, but if something was newly removed in 2025/2026 only a real run will catch it. For 2024, activating `c4dpy` once is enough.
 
-### Yeni API kullanmadan önce
-`py tests/compat/api_inventory.py` ile kullanılan adları gör; `py -m unittest discover -s tests/compat` yeni ad için başarısız olur ve ne yapılacağını söyler. Maxon belgesinde sınıf sayfasında "New in version" notuna bak; R17'den yeniyse yedek yol yaz, `api_matrix.NEWER`'a ekle, `profiles.py` içinde o sürümde yok say ve bir test ekle.
+### Before using a new API
+Run `python tests/compat/api_inventory.py` to see the names in use; `python -m unittest discover -s tests/compat` fails for a new name and says what to do. Look for the "New in version" note on the class page in Maxon's docs; if it is newer than R17, write a fallback, add it to `api_matrix.NEWER`, mark it missing in that version in `profiles.py` and add a test.
 
-## 7b. Adaptör — özet
-- `bridge`: MessageData plugin'i. `SpecialEventAdd` ve timer ile tetiklenir, ana thread'de çalışır.
+## 7b. Adapter summary
+- `bridge`: a MessageData plugin. It is triggered by `SpecialEventAdd` and a timer and runs on the main thread.
 
-## 8. Test
-- `tests/core`: çekirdek (protokol, model, kilitler, gerçek sunucu+istemci senaryoları, güvenlik, oturum yöneticisi).
-- `tests/adapter`: C4D adaptörü, **sahte bir `c4d` modülüyle** (`fake_c4d.py`). `.pyp` dosyasının yüklenmesini, Python 2'deki `str`/`unicode` kuralını, R19'un `ByteSeq` davranışını ve panelin Host/Join/Leave akışını C4D açmadan test eder. Gerçek API davranışını değil, bizim mantığımızı doğrular.
-- `tests/c4d_real`: **gerçek C4D API'si** üzerinde iki süreçli senaryo (host + misafir; sahne gönderme, düzenlemeler, hiyerarşi, silme, geometri, link, kod tiplerinin engellenmesi, yankı olmaması). Taraflar birbirleriyle oturumun kendi presence mesajlarıyla senkronize olur.
-  - `py tests/c4d_real/run.py` → iki gizli (GUI'siz) C4D 2023 `c4dpy` süreci, tamamen otomatik.
-  - `py tests/c4d_real/run.py --manual-peer guest|host --label r19` → bir rol `c4dpy`'de, diğeri GUI'li bir C4D'de **Plugins → C4D Collab Self-Test (dev)** ile (c4dpy olmayan R17–R20 için). Bu komut sadece `plugin/c4d_collab/selftest.enabled` dosyası varsa görünür (dosya repo yolunu içerir, git'e girmez).
-  - R19'un `Commandline.exe`'si ve `CINEMA 4D.exe -nogui` bu makinede yönetici hakkı istiyor, bu yüzden R19 tarafı tek tıkla çalıştırılıyor.
-- `tests/c4d_manual/CHECKLIST.md`: gerçek C4D'de elle yapılan testler (fareyle sürükleme, Ctrl+Z gibi otomatikleştirilemeyenler).
-- Testler sadece stdlib `unittest` kullanır, bu yüzden her Python'da çalışır (`tests/adapter` için de aynı komutlar, `-s tests/adapter` ile):
-  - Python 3: `py -m unittest discover -s tests/core -v`
-  - Python 2.7 (R19'un kendi Python'u): `"C:/Program Files/MAXON/Cinema 4D R19/resource/modules/python/Python.win64.framework/python.exe" -m unittest discover -s tests/core`
-  - C4D 2024 `c4dpy` (Python 3.11): ilk kullanımda bir kez Maxon lisans girişi ister.
-- C4D içi ölçüm scripti: `tests/c4d_manual/spike_probe.py` (Script Manager'dan çalıştırılır).
+## 8. Testing
+The test files live on the [`dev` branch](https://github.com/MertDurmus41/collab-4d/tree/dev) so that this branch only holds what is needed to use and read the project.
+- `tests/core`: the core (protocol, model, locks, real server + client scenarios, security, session manager).
+- `tests/adapter`: the C4D adapter, with a **fake `c4d` module** (`fake_c4d.py`). It tests loading of the `.pyp` file, the `str`/`unicode` rule on Python 2, R19's `ByteSeq` behaviour and the panel's Host/Join/Leave flow without opening C4D. It verifies our logic, not real API behaviour.
+- `tests/c4d_real`: a two-process scenario on the **real C4D API** (host + guest; sending a scene, edits, hierarchy, delete, geometry, links, blocking code types, no echo). The two sides synchronize through the session's own presence messages.
+  - `python tests/c4d_real/run.py` → two hidden (no GUI) C4D 2023 `c4dpy` processes, fully automatic.
+  - `python tests/c4d_real/run.py --manual-peer guest|host --label r19` → one role in `c4dpy`, the other in a C4D with a GUI through **Plugins → C4D Collab Self-Test (dev)** (for R17-R20, which have no c4dpy). This command only shows if the file `plugin/c4d_collab/selftest.enabled` exists (it contains a repository path and is not committed to git).
+- `tests/c4d_manual/CHECKLIST.md`: manual tests in a real C4D (mouse dragging, Ctrl+Z and other things that cannot be automated).
+- Tests only use the standard library `unittest`, so they run on any Python:
+  - Python 3: `python -m unittest discover -s tests/core -v`
+  - Python 2.7 (R19's own Python): `python.exe -m unittest discover -s tests/core` with the interpreter from R19's `resource/modules/python/Python.win64.framework`
+- In-C4D measurement script: `tests/c4d_manual/spike_probe.py` (run it from the Script Manager).
 
-## 9. Ölçümler (Aşama 0)
-Kaynak: `tests/c4d_manual/spike_probe.py`. Programdan yapılan düzenlemelerle ölçüldü; fareyle yapılan düzenlemeler Aşama 2'de ayrıca doğrulanacak.
+## 9. Measurements (Stage 0)
+Source: `tests/c4d_manual/spike_probe.py`. Measured with programmatic edits; edits made with the mouse are verified separately.
 
-| C4D sürümü | Python | Durum |
+| C4D version | Python | Status |
 |---|---|---|
-| 2023.1.3 | 3.9.1 | ✅ Tamamlandı |
-| R19.024 | 2.7.9 | ✅ Tamamlandı (kaydet/yükle testi bir test hatası yüzünden yapılamadı, Aşama 2 kontrol listesinde doğrulanacak) |
-| 2024 | 3.11 | Bekleniyor |
+| 2023.1.3 | 3.9.1 | Done |
+| R19.024 | 2.7.9 | Done (the save/load test could not be done because of a test bug) |
+| 2024 | 3.11 | Pending |
 
-### Sürüm farkları
-- **R19'da belge düzeyinde sadece `HDIRTYFLAGS_ALL` var.** Ayrıntılı bayraklar (`OBJECT`, `OBJECT_MATRIX`, `OBJECT_HIERARCHY`, `ANIMATION`, `TAG`) R19'da yok. `compat` modülü bunları sürüme göre eşler: yoksa `ALL` kullanılır ve "her şey değişmiş olabilir" kabul edilir (tam tarama). Ölçülen hızlarla bu R19'da da yeterince hızlı.
-- **R19'da `AddUniqueID` `str`/`bytearray` kabul etmiyor**, `c4d.storage.ByteSeq` istiyor. Çalışan yöntem: `seq = c4d.storage.ByteSeq(None, 16)`, ardından baytları tek tek `seq[i] = chr(b)` ile yazmak. Geri okuma doğru, kopyalanan nesne ID'yi taşımıyor (2023 ile aynı). `compat.write_uid()` önce `bytes` dener, olmazsa bu yöntemi kullanır.
-- **Python 2'de (R17–R22) c4d API'si `unicode` metin kabul etmiyor**, `str` istiyor (ör. `SaveDocument` dosya yolu). `unicode_literals` kullandığımız için c4d'ye giden her metin `compat.native_str()` üzerinden geçer. Bu kural sadece adaptör katmanını ilgilendirir.
-- Yedek fikir olarak denenen "ID'yi nesnenin BaseContainer'ında saklamak" çalışıyor ama ID kopyalanan nesneye de geçiyor. Bu yüzden kullanılmayacak, `AddUniqueID` kullanılacak.
-- `GetMarker` iki sürümde de Python'da yok; kullanılmayacak.
+### Version differences
+- **R19 only has `HDIRTYFLAGS_ALL` at document level.** The detailed flags (`OBJECT`, `OBJECT_MATRIX`, `OBJECT_HIERARCHY`, `ANIMATION`, `TAG`) do not exist on R19. The `compat` module maps them per version: if they are missing, `ALL` is used and "anything may have changed" is assumed (a full scan). With the measured speeds this is fast enough on R19 too.
+- **On R19 `AddUniqueID` does not accept `str`/`bytearray`**, it wants `c4d.storage.ByteSeq`. What works: `seq = c4d.storage.ByteSeq(None, 16)`, then writing the bytes one by one with `seq[i] = chr(b)`. Reading back is correct, and a cloned object does not carry the ID (same as 2023). `compat.write_uid()` tries `bytes` first and uses this method if that fails.
+- **On Python 2 (R17-R22) the c4d API does not accept `unicode` text**, it wants `str` (for example the `SaveDocument` file path). Because we use `unicode_literals`, every string that goes to c4d passes through `compat.native_str()`. This rule only concerns the adapter layer.
+- Storing the ID in the object's BaseContainer was tried as a fallback and works, but the ID also passes to a cloned object, so it is not used; `AddUniqueID` is used.
+- `GetMarker` does not exist in Python in either version and is not used.
 
-### Ortak bulgular (R19 ve 2023 aynı davranıyor)
-| Düzenleme | Nesnenin değişen sayaçları | Belgenin değişen sayaçları (`GetHDirty`) |
+### Findings shared by R19 and 2023
+| Edit | Counters that change on the object | Counters that change on the document (`GetHDirty`) |
 |---|---|---|
-| Taşıma / döndürme | `MATRIX` | `OBJECT_MATRIX` |
-| Parametre (ör. küp boyutu) | `DATA` | `OBJECT` |
-| Yeniden adlandırma | `DATA` | `OBJECT` |
-| Seçim | **hiçbiri** | **hiçbiri** |
-| Ebeveyn değiştirme | **hiçbiri** | `OBJECT_HIERARCHY` |
-| Tag ekleme | `DATA, MATRIX` | `OBJECT, OBJECT_MATRIX, TAG` |
-| Keyframe ekleme/değiştirme/zamanını kaydırma | nesne ve CTrack: **hiçbiri**, CCurve: `CHILDREN` | `ANIMATION` |
-| Frame değiştirme | hiçbiri | hiçbiri |
-| Nokta taşıma | `DATA` | `OBJECT, TAG` |
-| Extrude (topoloji değişimi) | `DATA, SELECT` | `OBJECT, TAG` |
+| Move / rotate | `MATRIX` | `OBJECT_MATRIX` |
+| Parameter (for example cube size) | `DATA` | `OBJECT` |
+| Rename | `DATA` | `OBJECT` |
+| Selection | **none** | **none** |
+| Reparent | **none** | `OBJECT_HIERARCHY` |
+| Add a tag | `DATA, MATRIX` | `OBJECT, OBJECT_MATRIX, TAG` |
+| Add/change/move a keyframe in time | object and CTrack: **none**, CCurve: `CHILDREN` | `ANIMATION` |
+| Change frame | none | none |
+| Move a point | `DATA` | `OBJECT, TAG` |
+| Extrude (topology change) | `DATA, SELECT` | `OBJECT, TAG` |
 
-(Belge sütunu 2023'e aittir; R19'da hepsinde sadece `ALL` değişir.)
+(The document column is from 2023; on R19 only `ALL` changes for all of them.)
 
-**Mimariye etkileri (tracker tasarımı):**
-1. **İki kademeli tarama:** Önce belgenin `GetHDirty` sayaçlarına bakılır (çok ucuz). Hiçbiri değişmediyse o tick'te hiçbir şey taranmaz. R19'da bu kontrol `ALL` ile yapılır.
-2. `OBJECT` / `OBJECT_MATRIX` / `TAG` değiştiyse nesnelerin `DATA`/`MATRIX` sayaçları taranır.
-3. `OBJECT_HIERARCHY` değiştiyse nesne sayaçlarına güvenilmez: sahnedeki `parent/prev` yapısı mirror ile karşılaştırılır.
-4. `ANIMATION` değiştiyse sadece CCurve'lerin `CHILDREN` sayaçları taranır.
-5. **Seçim** ve **geçerli frame** sayaçlara yansımıyor: timer içinde `doc.GetActiveObjects()` ve `doc.GetTime()` ayrıca kontrol edilir (kilit ve presence için).
+**Effects on the design (the tracker):**
+1. **Two-stage scan:** first the document's `GetHDirty` counters are checked (very cheap). If none changed, nothing is scanned in that tick. On R19 this check is made with `ALL`.
+2. If `OBJECT` / `OBJECT_MATRIX` / `TAG` changed, the objects' `DATA`/`MATRIX` counters are scanned.
+3. If `OBJECT_HIERARCHY` changed, the object counters cannot be trusted: the `parent/prev` structure in the scene is compared with the mirror.
+4. If `ANIMATION` changed, only the `CHILDREN` counters of CCurves are scanned.
+5. **Selection** and the **current frame** are not reflected in the counters: `doc.GetActiveObjects()` and `doc.GetTime()` are checked separately in the timer (for locks and presence).
 
 **UniqueID:**
-- `AddUniqueID` ile yazılan ID kaydetme/yükleme sonrası korunuyor ✅.
-- **Kopyalanan nesne ID'yi taşımıyor** (`GetClone`). Yani ID'siz nesne = yeni nesne demek; kopya tespiti için ek bir şey gerekmez.
-- `AddUniqueID` aynı uygulama ID'si için üzerine yazmıyor, yeni bir kayıt **ekliyor** (sayı 2 oldu). Okurken en son yazılan dönüyor. Kural: bir nesneye ID yalnızca bir kez yazılır.
+- An ID written with `AddUniqueID` survives save/load.
+- **A cloned object does not carry the ID** (`GetClone`). So an object without an ID means a new object, and no extra step is needed to detect copies.
+- `AddUniqueID` does not overwrite for the same application ID, it **adds** a new record (the count became 2). Reading returns the last one written. Rule: an ID is written to an object only once.
 
-- Modelleme: nokta taşıma ve extrude nesnenin `DATA` sayacını artırıyor. Nokta ve poligon sayısına bakılarak "sadece noktalar değişti" ile "topoloji değişti" ayrımı yapılabilir.
+- Modeling: moving a point and extrude raise the object's `DATA` counter. Looking at the point and polygon counts tells "only points changed" from "topology changed".
 
-### Animasyon ölçümleri (Aşama 5, 2023, `tests/c4d_manual/probe_animation.py`, c4dpy ile otomatik)
-| Düzenleme | Nesne / Track / Curve sayacı | Belge sayacı |
+### Animation measurements (Stage 5, 2023, `tests/c4d_manual/probe_animation.py`, automatic with c4dpy)
+| Edit | Object / Track / Curve counter | Document counter |
 |---|---|---|
-| Key ekleme, silme, değer, zaman, interpolasyon | – / – / `CHILDREN` | `ANIMATION` |
-| **Tangent değeri** | – / – / – | **–** |
-| **Track ayarı (after-loop vb.)** | – / – / – | **–** |
-| Kare değiştirme (`SetTime`) | – | – |
+| Add, delete a key; value, time, interpolation | – / – / `CHILDREN` | `ANIMATION` |
+| **Tangent value** | – / – / – | **–** |
+| **Track setting (after-loop and so on)** | – / – / – | **–** |
+| Change frame (`SetTime`) | – | – |
 
-Diğer bulgular: değer track tipi `CTbase` = 5350, `CCurve.AddKey` bir dict (`key`, `nidx`) döndürür, long/bool parametre track'leri de `GetValue()` ile sayısal değer kullanır.
+Other findings: the value track type is `CTbase` = 5350, `CCurve.AddKey` returns a dict (`key`, `nidx`), and long/bool parameter tracks also use a numeric value with `GetValue()`.
 
-### Modelleme ölçümleri (Aşama 6, 2023, `tests/c4d_manual/probe_modeling.py`, c4dpy ile otomatik)
-| Düzenleme | Sayaç |
+### Modeling measurements (Stage 6, 2023, `tests/c4d_manual/probe_modeling.py`, automatic with c4dpy)
+| Edit | Counter |
 |---|---|
-| `SetPoint` | nesne `DATA`; belge `OBJECT, TAG` |
-| **Seçim tag'inde seçim değişikliği** | **hiçbir sayaç** |
-| UVW `SetSlow` | UVW tag'i `DATA`; belge `TAG` |
-| Aktif poligon seçimi (`GetPolygonS`) | nesne `SELECT` (senkronize edilmez) |
-| Spline `SetPoint` | nesne `DATA`; **`SetTangent` ve `SetSegment`: hiçbir sayaç**; tür değişikliği `DATA` |
+| `SetPoint` | object `DATA`; document `OBJECT, TAG` |
+| **Selection change in a selection tag** | **no counter** |
+| UVW `SetSlow` | UVW tag `DATA`; document `TAG` |
+| Active polygon selection (`GetPolygonS`) | object `SELECT` (not synchronized) |
+| Spline `SetPoint` | object `DATA`; **`SetTangent` and `SetSegment`: no counter**; a type change `DATA` |
 
-Diğer bulgular:
-- `SelectAll(a, b)` hiçbir şey seçmedi; seçimi **`SetAll(liste)`** ile yazıp `GetCount` ile doğruluyoruz (olmazsa `Select(i)` döngüsü). Okuma `GetSegments`/`GetRange(i, sayı)` ile (kapalı aralıklar).
-- `MakeTag(Tuvw)` sonrası UVW tag'inde 0 eleman var; `ResizeObject(aynı boyut)` tag'i poligon sayısına boyutlandırır. Sonra C4D tag'i poligon sayısıyla senkron tutar (extrude: 4→8 poligon, UVW 8).
-- `ResizeObject` mevcut nokta ve UV verisini korur (büyütme ve aynı boyut).
-- `BaseObject(Ospline)` boş doğar (0 nokta); `ResizeObject(nokta, segment)` sonrası `SetSegment` çalışır. Bezier türünde tangent sayısı = nokta sayısı.
-- UV değerleri C4D'de **float32** saklanır; yazdığımızın aynısını okuyamayız, ama gönderen hep C4D'den okuduğu için tutarlı kalır (yankı yok).
-- Hız (2023): 100.000 nokta okuma ~20 ms, poligon ~27 ms, yazma ~26 ms.
+Other findings:
+- `SelectAll(a, b)` selected nothing; the selection is written with **`SetAll(list)`** and verified with `GetCount` (a `Select(i)` loop if that fails). Reading uses `GetSegments`/`GetRange(i, count)` (closed ranges).
+- After `MakeTag(Tuvw)` the UVW tag has 0 elements; `ResizeObject(same size)` sizes the tag to the polygon count. After that C4D keeps the tag in step with the polygon count (extrude: 4→8 polygons, UVW 8).
+- `ResizeObject` keeps existing point and UV data (growing and same size).
+- `BaseObject(Ospline)` is born empty (0 points); `SetSegment` works after `ResizeObject(points, segments)`. For Bezier the tangent count = the point count.
+- UV values are stored as **float32** in C4D; we cannot read back exactly what we wrote, but the sender always reads from C4D, so it stays consistent (no echo).
+- Speed (2023): reading 100,000 points about 20 ms, polygons about 27 ms, writing about 26 ms.
 
-**Performans (nesne başına 2 sayaç okuma, tam tarama):**
+**Performance (reading 2 counters per object, full scan):**
 
-| | 1.000 nesne | 10.000 nesne |
+| | 1,000 objects | 10,000 objects |
 |---|---|---|
-| R19 | 0,56 ms | 6,13 ms |
-| 2023 | 0,51 ms | 4,86 ms |
+| R19 | 0.56 ms | 6.13 ms |
+| 2023 | 0.51 ms | 4.86 ms |
 
-Hedef 1.000 nesne başına 10 ms'nin altıydı; gerçek değer bunun yaklaşık 20 katı daha hızlı ✅.
+The target was under 10 ms per 1,000 objects; the real value is about 20 times faster.
